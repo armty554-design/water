@@ -17,8 +17,18 @@ export interface FirebaseConfig {
 
 const STORAGE_KEY = 'water_app_firebase_config';
 
+export const DEFAULT_FIREBASE_CONFIG: FirebaseConfig = {
+  apiKey: "AIzaSyBX6tYWTVkOJ3fR2du-ResC7vcwhzrVzxw",
+  authDomain: "water-delivery-14a16.firebaseapp.com",
+  projectId: "water-delivery-14a16",
+  storageBucket: "water-delivery-14a16.firebasestorage.app",
+  messagingSenderId: "282230749909",
+  appId: "1:282230749909:web:3cf276b27a4ea5496e405c",
+  measurementId: "G-WWXY9GPHSZ"
+};
+
 /**
- * Get active Firebase configuration from environment or localStorage
+ * Get active Firebase configuration from environment, localStorage, or default
  */
 export function getFirebaseConfig(): FirebaseConfig | null {
   // 1. Check environment variables (Vite / Vercel)
@@ -34,7 +44,7 @@ export function getFirebaseConfig(): FirebaseConfig | null {
     };
   }
 
-  // 2. Check localStorage
+  // 2. Check localStorage (custom user override)
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
     try {
@@ -47,7 +57,8 @@ export function getFirebaseConfig(): FirebaseConfig | null {
     }
   }
 
-  return null;
+  // 3. Built-in default project config
+  return DEFAULT_FIREBASE_CONFIG;
 }
 
 export function saveFirebaseConfig(config: FirebaseConfig): void {
