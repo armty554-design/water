@@ -193,6 +193,23 @@ export const LoginView: React.FC<LoginViewProps> = ({
         </div>
       </div>
 
+      {/* Developer Credit */}
+      <div className="mt-8 text-center text-xs text-slate-400">
+        <span>AquaRoute Delivery Management</span>
+        <span className="mx-2 text-slate-300">•</span>
+        <span>
+          พัฒนาและออกแบบโดย{' '}
+          <a
+            href="https://github.com/armty554-design"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-slate-600 hover:text-slate-900 underline"
+          >
+            armty554-design
+          </a>
+        </span>
+      </div>
+
     </div>
   );
 };

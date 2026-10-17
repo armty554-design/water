@@ -2,6 +2,7 @@
   "name": "water-delivery-app",
   "private": true,
   "version": "1.0.0",
+  "author": "armty554-design <https://github.com/armty554-design>",
   "type": "module",
   "scripts": {
     "dev": "vite",

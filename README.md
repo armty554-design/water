@@ -64,6 +64,16 @@ git push -u origin main
 
 ## 🛠️ เทคโนโลยีที่ใช้
 - **Frontend Framework**: React 18 + TypeScript + Vite
-- **Styling**: Tailwind CSS + Lucide Icons + Google Font (Prompt)
-- **Map Engine**: Leaflet + OpenStreetMap (ไม่ต้องใช้ API Key) + Google Maps Navigation Deep Links
-- **Data & Storage**: SheetJS (`xlsx`) + IndexedDB (`idb-keyval`) รองรับข้อมูลสมาชิกกว่า 20,000+ รายการได้ลื่นไหล ไม่ต้องพึ่งพา Database ภายนอก
+- **Styling**: Tailwind CSS + Lucide Icons + Google Fonts (Inter & Sarabun)
+- **Map Engine**: Leaflet + OpenStreetMap + Google Maps Navigation Deep Links
+- **Data & Storage**: 
+  - SheetJS (`xlsx`) วิเคราะห์ข้อมูลสมาชิก 21,000+ รายการได้รวดเร็ว
+  - IndexedDB (`idb-keyval`) ทำงานแบบ Local-first ออฟไลน์ได้
+  - **Firebase Cloud Firestore** ซิงค์ข้อมูล Real-time ระหว่างคอมพิวเตอร์ Office และมือถือของคนขับรถ
+
+---
+
+## 👨‍💻 ผู้พัฒนาและลิขสิทธิ์ (Author & Credits)
+- **พัฒนาและออกแบบโดย**: [armty554-design](https://github.com/armty554-design)
+- **GitHub Repository**: [https://github.com/armty554-design/water](https://github.com/armty554-design/water)
+- **ระบบ**: AquaRoute - Water Delivery Route Dispatch & Real-Time Tracking

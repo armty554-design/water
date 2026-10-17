@@ -338,8 +338,22 @@ export const App: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-3 text-center text-[11px] text-slate-400">
-        AquaRoute • ระบบบริหารจัดการสายส่งน้ำดื่ม
+      <footer className="border-t border-slate-200 bg-white py-3.5 px-4 text-center text-xs text-slate-500">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2">
+          <span>AquaRoute • ระบบบริหารจัดการและติดตามสายส่งน้ำดื่ม</span>
+          <span className="hidden sm:inline text-slate-300">•</span>
+          <span>
+            พัฒนาและออกแบบโดย{' '}
+            <a 
+              href="https://github.com/armty554-design" 
+              target="_blank" 
+              rel="noreferrer" 
+              className="font-semibold text-slate-800 hover:text-blue-600 underline decoration-slate-300 transition"
+            >
+              armty554-design
+            </a>
+          </span>
+        </div>
       </footer>
 
       {/* Firebase Cloud Config Modal */}
