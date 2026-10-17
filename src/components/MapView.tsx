@@ -26,12 +26,10 @@ export const MapView: React.FC<MapViewProps> = ({
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
 
-  // Initialize Map
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
 
-    // Default center (Bangkok vicinity or center of Thailand)
     const map = L.map(mapContainerRef.current, {
       center: [13.7563, 100.5018],
       zoom: 11,
@@ -40,7 +38,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
+      attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
     markersLayerRef.current = L.layerGroup().addTo(map);
@@ -52,7 +50,6 @@ export const MapView: React.FC<MapViewProps> = ({
     };
   }, []);
 
-  // Update Markers & Polyline when stops change
   useEffect(() => {
     const map = mapInstanceRef.current;
     const markersLayer = markersLayerRef.current;
@@ -78,41 +75,30 @@ export const MapView: React.FC<MapViewProps> = ({
       const isNext = index === currentStopIndex;
       const isSelected = selectedStop?.member.id === stop.member.id;
 
-      // Color coding:
-      // Green = Completed
-      // Amber/Orange = Next in line
-      // Blue = Normal upcoming
-      // Purple = Selected
-      let bgColor = 'bg-brand-600 text-white border-white';
-      let ringEffect = '';
+      let markerBg = '#2563eb'; // blue-600
+      let textColor = '#ffffff';
+      let border = '2px solid #ffffff';
 
       if (isCompleted) {
-        bgColor = 'bg-emerald-600 text-white border-emerald-100';
+        markerBg = '#10b981'; // emerald-500
       } else if (isSelected) {
-        bgColor = 'bg-violet-600 text-white border-white scale-125';
-        ringEffect = 'ring-4 ring-violet-300';
+        markerBg = '#1e293b'; // slate-800
+        border = '2px solid #60a5fa';
       } else if (isNext && userRole === 'driver') {
-        bgColor = 'bg-amber-500 text-white border-white scale-125 animate-bounce';
-        ringEffect = 'ring-4 ring-amber-300';
+        markerBg = '#f59e0b'; // amber-500
+        border = '2px solid #ffffff';
       }
 
       const customIcon = L.divIcon({
-        className: 'custom-map-marker',
+        className: 'clean-map-marker',
         html: `
-          <div class="relative flex items-center justify-center transition-all">
-            <div class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shadow-lg border-2 ${bgColor} ${ringEffect}">
-              ${isCompleted ? '✓' : stop.sequence}
-            </div>
-            ${isNext && userRole === 'driver' && !isCompleted ? `
-              <span class="absolute -top-6 px-1.5 py-0.5 rounded bg-amber-600 text-[10px] font-bold text-white shadow whitespace-nowrap">
-                จุดถัดไป
-              </span>
-            ` : ''}
+          <div style="background-color: ${markerBg}; color: ${textColor}; border: ${border}; width: 26px; height: 26px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; box-shadow: 0 2px 4px rgba(0,0,0,0.25);">
+            ${isCompleted ? '✓' : stop.sequence}
           </div>
         `,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
-        popupAnchor: [0, -18]
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+        popupAnchor: [0, -14]
       });
 
       const marker = L.marker([lat, lng], { icon: customIcon });
@@ -122,51 +108,47 @@ export const MapView: React.FC<MapViewProps> = ({
       const avgQty = stop.daySchedule?.avgQuantity || 0;
 
       const popupContent = document.createElement('div');
-      popupContent.className = 'p-1 text-slate-800 font-sans';
+      popupContent.className = 'text-slate-800';
       popupContent.innerHTML = `
-        <div class="border-b border-slate-200 pb-2 mb-2">
-          <div class="flex items-center gap-1.5">
-            <span class="px-2 py-0.5 text-xs font-bold rounded-full ${isCompleted ? 'bg-emerald-100 text-emerald-800' : 'bg-brand-100 text-brand-800'}">
-              จุดที่ ${stop.sequence} ${isCompleted ? '(ส่งแล้ว)' : ''}
-            </span>
-            <span class="text-xs text-slate-500">${stop.member.id}</span>
+        <div style="border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 8px;">
+          <div style="font-size: 11px; color: #64748b; font-weight: 600;">
+            ลำดับที่ ${stop.sequence} ${isCompleted ? '(ส่งมอบแล้ว)' : ''} | รหัส: ${stop.member.id}
           </div>
-          <h4 class="font-bold text-sm text-slate-900 mt-1">${stop.member.name}</h4>
+          <div style="font-weight: 700; font-size: 13px; color: #0f172a; margin-top: 2px;">
+            ${stop.member.name}
+          </div>
         </div>
         
-        <div class="space-y-1 text-xs text-slate-600 mb-3">
-          <div class="flex justify-between">
-            <span class="text-slate-500">🕒 ช่วงเวลา:</span>
-            <span class="font-semibold text-slate-800">${timeWindow}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-slate-500">💧 ยอดเฉลี่ย:</span>
-            <span class="font-semibold text-brand-700">${avgQty} ถัง</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-slate-500">📦 รับน้ำ:</span>
-            <span class="font-medium text-slate-700 truncate max-w-[150px]">${stop.member.receiveType}</span>
-          </div>
-        </div>
+        <table style="width: 100%; font-size: 11px; margin-bottom: 10px; border-collapse: collapse;">
+          <tr>
+            <td style="color: #64748b; padding: 2px 0;">ช่วงเวลาส่ง:</td>
+            <td style="font-weight: 600; text-align: right;">${timeWindow}</td>
+          </tr>
+          <tr>
+            <td style="color: #64748b; padding: 2px 0;">ยอดเฉลี่ย:</td>
+            <td style="font-weight: 600; text-align: right; color: #0284c7;">${avgQty} ถัง</td>
+          </tr>
+          <tr>
+            <td style="color: #64748b; padding: 2px 0;">ประเภทรับน้ำ:</td>
+            <td style="font-weight: 500; text-align: right; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${stop.member.receiveType}</td>
+          </tr>
+        </table>
 
-        <div class="flex flex-col gap-1.5 pt-1">
+        <div style="display: flex; flex-direction: column; gap: 4px;">
           <a href="${googleMapsUrl}" target="_blank" rel="noopener noreferrer" 
-             class="flex items-center justify-center gap-1 px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-xs font-medium shadow-sm transition">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polygon points="3 11 22 2 13 21 11 13 3 11"/>
-            </svg>
+             style="display: block; text-align: center; padding: 6px 10px; background-color: #2563eb; color: #ffffff; border-radius: 6px; font-size: 11px; font-weight: 600; text-decoration: none;">
             เปิด Google Maps นำทาง
           </a>
         </div>
       `;
 
-      // If driver view, add a quick toggle complete button in popup
       if (onMarkComplete) {
         const toggleBtn = document.createElement('button');
-        toggleBtn.className = `w-full mt-1 px-3 py-1.5 rounded-lg text-xs font-medium text-white shadow-sm transition ${
-          isCompleted ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
-        }`;
-        toggleBtn.innerText = isCompleted ? '↩ ยกเลิกส่งแล้ว' : '✅ บันทึกว่าส่งเสร็จสิ้น';
+        toggleBtn.style.cssText = `
+          width: 100%; margin-top: 4px; padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; color: #ffffff; cursor: pointer; border: none;
+          background-color: ${isCompleted ? '#d97706' : '#10b981'};
+        `;
+        toggleBtn.innerText = isCompleted ? 'ยกเลิกสถานะส่งมอบ' : 'ยืนยันส่งมอบสำเร็จ';
         toggleBtn.onclick = () => {
           onMarkComplete(stop.member.id, !isCompleted);
           map.closePopup();
@@ -175,7 +157,6 @@ export const MapView: React.FC<MapViewProps> = ({
       }
 
       marker.bindPopup(popupContent);
-
       marker.on('click', () => {
         if (onSelectStop) onSelectStop(stop);
       });
@@ -183,52 +164,49 @@ export const MapView: React.FC<MapViewProps> = ({
       markersLayer.addLayer(marker);
     });
 
-    // Draw route polyline
     if (latLngs.length > 1) {
       polylineRef.current = L.polyline(latLngs, {
-        color: '#0284c7',
-        weight: 3.5,
-        opacity: 0.75,
-        dashArray: '6, 6',
-        lineCap: 'round'
+        color: '#2563eb',
+        weight: 2.5,
+        opacity: 0.8,
+        dashArray: '4, 4'
       }).addTo(map);
     }
 
-    // Fit map bounds to encompass all valid points
     if (latLngs.length > 0) {
       const bounds = L.latLngBounds(latLngs);
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+      map.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 });
     }
   }, [stops, selectedStop, currentStopIndex, userRole, onSelectStop, onMarkComplete]);
 
   return (
-    <div className={`relative w-full ${heightClass} rounded-2xl overflow-hidden border border-slate-200 shadow-sm`}>
+    <div className={`relative w-full ${heightClass} rounded-xl overflow-hidden border border-slate-200 bg-slate-50`}>
       <div ref={mapContainerRef} className="w-full h-full z-10" />
 
-      {/* Map Legend */}
-      <div className="absolute bottom-3 left-3 z-[400] bg-white/90 backdrop-blur-md px-3 py-2 rounded-xl text-xs shadow-md border border-slate-200 flex items-center space-x-3">
+      {/* Subtle Legend */}
+      <div className="absolute bottom-2.5 left-2.5 z-[400] bg-white/95 backdrop-blur px-2.5 py-1.5 rounded-md text-[11px] shadow-sm border border-slate-200 flex items-center space-x-3 text-slate-600">
         <div className="flex items-center space-x-1">
-          <span className="w-3 h-3 rounded-full bg-brand-600 inline-block"></span>
-          <span className="text-slate-600">จุดรอส่ง</span>
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block"></span>
+          <span>รอดำเนินการ</span>
         </div>
         <div className="flex items-center space-x-1">
-          <span className="w-3 h-3 rounded-full bg-emerald-600 inline-block"></span>
-          <span className="text-slate-600">ส่งแล้ว</span>
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
+          <span>ส่งมอบแล้ว</span>
         </div>
         {userRole === 'driver' && (
           <div className="flex items-center space-x-1">
-            <span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
-            <span className="text-slate-600 font-medium">จุดถัดไป</span>
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block"></span>
+            <span>จุดปัจจุบัน</span>
           </div>
         )}
       </div>
 
       {stops.filter(s => s.member.hasGps).length === 0 && (
-        <div className="absolute inset-0 z-[400] bg-slate-900/10 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white p-4 rounded-xl shadow-lg text-center max-w-sm">
-            <p className="text-sm font-medium text-slate-800">ไม่มีข้อมูลพิกัด GPS ในสายส่งนี้</p>
-            <p className="text-xs text-slate-500 mt-1">
-              โปรดตรวจสอบไฟล์ข้อมูลสมาชิกหรือเลือกสายรถ/วันอื่น
+        <div className="absolute inset-0 z-[400] bg-slate-900/10 flex items-center justify-center p-4">
+          <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 text-center max-w-sm">
+            <p className="text-xs font-semibold text-slate-700">ไม่พบพิกัด GPS ในสายส่งนี้</p>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              โปรดตรวจสอบข้อมูลสมาชิกหรือเลือกสายรถอื่น
             </p>
           </div>
         </div>
