@@ -19,35 +19,37 @@ export const AddStopModal: React.FC<AddStopModalProps> = ({
   onClose
 }) => {
   const [search, setSearch] = useState('');
-  const [conditionTab, setConditionTab] = useState<'all' | 'ondemand' | 'biweekly' | 'monthly'>('ondemand');
+  const [conditionTab, setConditionTab] = useState<'all' | 'ondemand' | 'biweekly' | 'monthly'>('all');
 
   // Set of member IDs already in currentStops
   const existingIds = useMemo(() => new Set(currentStops.map(s => s.member.id)), [currentStops]);
 
-  // Filter candidates
+  // Filter candidates across all trucks and all days
   const candidates = useMemo(() => {
+    const q = search.trim().toLowerCase();
+
     return allMembers.filter(m => {
       // Must not already be in current stops
       if (existingIds.has(m.id)) return false;
 
-      // Check condition tab
+      // Condition filter tab
       if (conditionTab === 'ondemand' && !m.deliveryCondition.includes('โทรสั่ง')) return false;
       if (conditionTab === 'biweekly' && !m.deliveryCondition.includes('รอบเว้นรอบ')) return false;
       if (conditionTab === 'monthly' && !m.deliveryCondition.includes('สัปดาห์ที่')) return false;
 
-      // Check search
-      if (search.trim()) {
-        const q = search.toLowerCase();
-        const matchName = m.name.toLowerCase().includes(q);
+      // Search matching across ID, Name, Truck, or Days
+      if (q) {
         const matchId = m.id.toLowerCase().includes(q);
+        const matchName = m.name.toLowerCase().includes(q);
         const matchTruck = m.truckNo.toLowerCase().includes(q);
-        return matchName || matchId || matchTruck;
+        const matchDays = m.deliveryDays.some(d => d.toLowerCase().includes(q));
+        return matchId || matchName || matchTruck || matchDays;
       }
 
-      // If no search, prioritize members belonging to this truck
-      return m.truckNo === selectedTruck;
+      // If no search and on 'all' tab, prioritize other trucks or other days
+      return true;
     });
-  }, [allMembers, existingIds, conditionTab, search, selectedTruck]);
+  }, [allMembers, existingIds, conditionTab, search]);
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
@@ -56,9 +58,9 @@ export const AddStopModal: React.FC<AddStopModalProps> = ({
         {/* Header */}
         <div className="bg-slate-900 text-white px-5 py-3.5 flex items-center justify-between">
           <div>
-            <h3 className="font-semibold text-sm">เพิ่มจุดส่งแทรก (โทรสั่งก่อนน้ำหมด / รอบเว้นรอบ / รอบสัปดาห์)</h3>
+            <h3 className="font-semibold text-sm">ค้นหารหัสสมาชิกเพื่อเพิ่มงาน (ข้ามสายรถ / ข้ามวันส่ง)</h3>
             <p className="text-[11px] text-slate-400 mt-0.5">
-              เลือกลูกค้าที่โทรสั่งหรือต้องการส่งเพิ่มเข้าสายรถ {selectedTruck} วัน {selectedDay}
+              ค้นหารหัสหรือชื่อสมาชิกจากสายรถอื่น หรือวันอื่น เพื่อดึงเข้าสายรถ {selectedTruck} วัน {selectedDay}
             </p>
           </div>
           <button
@@ -72,13 +74,38 @@ export const AddStopModal: React.FC<AddStopModalProps> = ({
         {/* Content */}
         <div className="p-4 space-y-3 text-xs">
           
+          {/* Search Box - Prominent */}
+          <div>
+            <label className="block text-slate-700 font-semibold mb-1">
+              ค้นหารหัสสมาชิก หรือชื่อลูกค้า (ค้นหาได้ทั้งระบบ):
+            </label>
+            <input
+              type="text"
+              placeholder="พิมพ์รหัสสมาชิก (เช่น 00033, 00043) หรือชื่อลูกค้า..."
+              value={search}
+              autoFocus
+              onChange={e => setSearch(e.target.value)}
+              className="w-full text-xs px-3 py-2.5 border-2 border-slate-300 rounded-lg focus:outline-none focus:border-slate-900 bg-slate-50 focus:bg-white"
+            />
+          </div>
+
           {/* Condition Filter Tabs */}
-          <div className="flex border-b border-slate-200 pb-2 gap-2 text-xs">
+          <div className="flex border-b border-slate-200 pb-2 gap-2 text-xs flex-wrap">
+            <button
+              onClick={() => setConditionTab('all')}
+              className={`px-3 py-1 rounded-lg font-medium transition ${
+                conditionTab === 'all'
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              ทั้งหมด (ข้ามรถ/ข้ามวัน)
+            </button>
             <button
               onClick={() => setConditionTab('ondemand')}
               className={`px-3 py-1 rounded-lg font-medium transition ${
                 conditionTab === 'ondemand'
-                  ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                  ? 'bg-amber-100 text-amber-900 border border-amber-300 font-semibold'
                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
               }`}
             >
@@ -88,7 +115,7 @@ export const AddStopModal: React.FC<AddStopModalProps> = ({
               onClick={() => setConditionTab('biweekly')}
               className={`px-3 py-1 rounded-lg font-medium transition ${
                 conditionTab === 'biweekly'
-                  ? 'bg-purple-100 text-purple-900 border border-purple-300'
+                  ? 'bg-purple-100 text-purple-900 border border-purple-300 font-semibold'
                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
               }`}
             >
@@ -98,46 +125,33 @@ export const AddStopModal: React.FC<AddStopModalProps> = ({
               onClick={() => setConditionTab('monthly')}
               className={`px-3 py-1 rounded-lg font-medium transition ${
                 conditionTab === 'monthly'
-                  ? 'bg-blue-100 text-blue-900 border border-blue-300'
+                  ? 'bg-blue-100 text-blue-900 border border-blue-300 font-semibold'
                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
               }`}
             >
               สัปดาห์ที่ 1 - 4
             </button>
-            <button
-              onClick={() => setConditionTab('all')}
-              className={`px-3 py-1 rounded-lg font-medium transition ${
-                conditionTab === 'all'
-                  ? 'bg-slate-900 text-white'
-                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              ทั้งหมด
-            </button>
           </div>
 
-          {/* Search Input */}
-          <div>
-            <input
-              type="text"
-              placeholder="ค้นหาชื่อ, รหัสสมาชิก หรือเบอร์รถ..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-900"
-            />
+          {/* Results Summary */}
+          <div className="text-[11px] text-slate-500">
+            พบสมาชิกที่พร้อมดึงเข้าสายส่ง: <strong>{candidates.length.toLocaleString()} ราย</strong>
           </div>
 
           {/* Candidates List */}
-          <div className="max-h-[360px] overflow-y-auto space-y-1.5 border border-slate-200 rounded-xl p-2 bg-slate-50">
+          <div className="max-h-[380px] overflow-y-auto space-y-2 border border-slate-200 rounded-xl p-2 bg-slate-50">
             {candidates.length === 0 ? (
-              <div className="py-8 text-center text-slate-400">
-                ไม่พบสมาชิกที่ตรงกับเงื่อนไข หรือสมาชิกอยู่ในสายส่งแล้ว
+              <div className="py-10 text-center text-slate-400">
+                ไม่พบสมาชิกที่ตรงกับคำค้นหา หรือสมาชิกอยู่ในสายส่งนี้แล้ว
               </div>
             ) : (
-              candidates.slice(0, 50).map(member => {
-                const schedule = member.schedules?.[selectedDay];
+              candidates.slice(0, 60).map(member => {
+                const schedule = member.schedules?.[selectedDay] || Object.values(member.schedules || {})[0];
                 const timeStr = schedule?.timeWindow || member.targetTime || 'ไม่ระบุ';
                 const avgBottles = schedule?.avgQuantity || 0;
+
+                const isDifferentTruck = member.truckNo !== selectedTruck;
+                const isDifferentDay = !member.deliveryDays.includes(selectedDay);
 
                 let condBadgeColor = 'bg-slate-100 text-slate-700 border-slate-200';
                 if (member.deliveryCondition.includes('โทรสั่ง')) {
@@ -151,27 +165,36 @@ export const AddStopModal: React.FC<AddStopModalProps> = ({
                 return (
                   <div
                     key={member.id}
-                    className="p-2.5 bg-white rounded-lg border border-slate-200 hover:border-slate-300 flex items-center justify-between gap-3"
+                    className="p-3 bg-white rounded-lg border border-slate-200 hover:border-slate-300 flex items-center justify-between gap-3 shadow-xs"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-slate-900 truncate">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-slate-900">
                           {member.name}
                         </span>
-                        <span className="text-slate-400 text-[10px]">
+                        <span className="text-slate-500 font-mono text-[11px] bg-slate-100 px-1.5 py-0.5 rounded">
                           #{member.id}
                         </span>
                         <span className={`text-[10px] px-2 py-0.2 rounded border font-medium ${condBadgeColor}`}>
                           {member.deliveryCondition}
                         </span>
+
+                        {isDifferentTruck && (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                            จากรถ {member.truckNo}
+                          </span>
+                        )}
+                        {isDifferentDay && (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                            รอบปกติ: {member.deliveryDays.join(', ')}
+                          </span>
+                        )}
                       </div>
 
                       <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-                        <span>สายรถประจำ: <strong>{member.truckNo}</strong></span>
+                        <span>เวลา: <strong>{timeStr}</strong></span>
                         <span>•</span>
-                        <span>เวลา: {timeStr}</span>
-                        <span>•</span>
-                        <span>จำนวน: {avgBottles} ถัง</span>
+                        <span>จำนวน: <strong>{avgBottles} ถัง</strong></span>
                         <span>•</span>
                         <span className="truncate">{member.receiveType}</span>
                       </div>
@@ -179,9 +202,9 @@ export const AddStopModal: React.FC<AddStopModalProps> = ({
 
                     <button
                       onClick={() => onAddStop(member)}
-                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium text-xs whitespace-nowrap shadow-sm transition"
+                      className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold text-xs whitespace-nowrap shadow-sm transition"
                     >
-                      + เพิ่มเข้าสายส่ง
+                      + ดึงเข้าสายนี้
                     </button>
                   </div>
                 );

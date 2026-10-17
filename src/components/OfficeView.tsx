@@ -53,6 +53,10 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
   const [uploadSuccessMsg, setUploadSuccessMsg] = useState<string | null>(null);
   const [syncReport, setSyncReport] = useState<SyncDiffReport | null>(null);
 
+  // Drag & drop state for reordering
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
   const filteredStops = useMemo(() => {
     if (!searchQuery.trim()) return stops;
     const q = searchQuery.toLowerCase();
@@ -63,6 +67,21 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
       (s.member.deliveryCondition && s.member.deliveryCondition.toLowerCase().includes(q))
     );
   }, [stops, searchQuery]);
+
+  const handleDrop = (targetIndex: number) => {
+    if (draggedIndex === null || draggedIndex === targetIndex) {
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    const newStops = [...stops];
+    const [moved] = newStops.splice(draggedIndex, 1);
+    newStops.splice(targetIndex, 0, moved);
+    const resequenced = newStops.map((s, idx) => ({ ...s, sequence: idx + 1 }));
+    onStopsChange(resequenced);
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -255,13 +274,13 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
             </div>
           </div>
 
-          {/* Button: Add On-demand Stop */}
+          {/* Button: Add Stop across trucks and days */}
           <div>
             <button
               onClick={() => setIsAddModalOpen(true)}
               className="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-medium text-xs shadow-sm transition"
             >
-              + แทรกงานส่ง (โทรสั่ง/รอบเว้นรอบ)
+              + ค้นหารหัสเพิ่มงาน (ข้ามสายรถ/ข้ามวัน)
             </button>
           </div>
 
@@ -406,12 +425,40 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                   condBadge = 'bg-blue-50 text-blue-800 border-blue-200 font-semibold';
                 }
 
+                const isBeingDragged = draggedIndex === index;
+                const isDragOver = dragOverIndex === index && draggedIndex !== index;
+
                 return (
                   <div
                     key={stop.member.id}
+                    draggable={true}
+                    onDragStart={(e) => {
+                      setDraggedIndex(index);
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (dragOverIndex !== index) setDragOverIndex(index);
+                    }}
+                    onDragLeave={() => {
+                      if (dragOverIndex === index) setDragOverIndex(null);
+                    }}
+                    onDragEnd={() => {
+                      setDraggedIndex(null);
+                      setDragOverIndex(null);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      handleDrop(index);
+                    }}
                     onClick={() => setSelectedStop(stop)}
-                    className={`p-2.5 rounded-lg border transition cursor-pointer flex items-center justify-between gap-2 text-xs ${
-                      isSelected
+                    className={`p-2.5 rounded-lg border transition cursor-pointer flex items-center justify-between gap-2 text-xs select-none ${
+                      isBeingDragged
+                        ? 'opacity-40 scale-[0.98] bg-slate-100 border-dashed border-2 border-slate-400'
+                        : isDragOver
+                        ? 'border-t-4 border-t-blue-600 bg-blue-50/50 shadow-sm'
+                        : isSelected
                         ? 'border-blue-500 bg-blue-50/50'
                         : stop.isCompleted
                         ? 'border-emerald-200 bg-emerald-50/30'
@@ -420,7 +467,16 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                   >
                     
                     {/* Stop Number & Info */}
-                    <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                    <div className="flex items-start gap-2 flex-1 min-w-0">
+                      
+                      {/* Drag Grip Handle */}
+                      <div 
+                        className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-700 py-1 px-0.5 select-none shrink-0 font-mono text-[13px] leading-none"
+                        title="กดค้างเพื่อลากย้ายลำดับ (Drag & Drop)"
+                      >
+                        ⠿
+                      </div>
+
                       <div className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[11px] font-bold text-white mt-0.5 ${
                         stop.isCompleted ? 'bg-emerald-600' : 'bg-slate-900'
                       }`}>
