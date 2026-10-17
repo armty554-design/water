@@ -172,9 +172,14 @@ export const DriverView: React.FC<DriverViewProps> = ({
                     <span className="text-[10px] uppercase font-semibold text-slate-500">
                       ลำดับที่ {currentStop.sequence} จาก {stops.length} รายการ
                     </span>
-                    <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-tight">
-                      {currentStop.member.name}
-                    </h3>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-tight">
+                        {currentStop.member.name}
+                      </h3>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded border bg-slate-50 text-slate-700 border-slate-200">
+                        {currentStop.member.deliveryCondition || 'รอบปกติ'}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -286,8 +291,13 @@ export const DriverView: React.FC<DriverViewProps> = ({
                     </span>
 
                     <div>
-                      <div className="font-semibold text-slate-900">
-                        {stop.member.name}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-semibold text-slate-900">
+                          {stop.member.name}
+                        </span>
+                        <span className="text-[10px] px-1 py-0.2 rounded border bg-slate-50 text-slate-600 border-slate-200">
+                          {stop.member.deliveryCondition || 'รอบปกติ'}
+                        </span>
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">
                         เวลา: {stop.daySchedule?.timeWindow || stop.member.targetTime || 'ไม่ระบุ'} | จำนวน: {stop.daySchedule?.avgQuantity || 0} ถัง

@@ -10,6 +10,7 @@ import {
   markStopCompleted, getLastTruck, saveLastTruck 
 } from './services/db';
 import { getCurrentUser, clearSession } from './services/auth';
+import { DeliveryConditionFilter, shouldIncludeMemberByCondition } from './services/weekHelper';
 import initialMembersData from './data/initialData.json';
 
 function getCurrentThaiDay(): DayOfWeek {
@@ -29,12 +30,19 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
+  // Delivery condition filter (Default: only รอบปกติ!)
+  const [conditionFilter, setConditionFilter] = useState<DeliveryConditionFilter>({
+    includeRegular: true,
+    includeBiWeekly: false,
+    includeOnDemand: false,
+    selectedMonthlyWeek: null
+  });
+
   // 1. Initial Load: Auth Session & Data
   useEffect(() => {
     async function initData() {
       setIsLoading(true);
       try {
-        // Check existing login session
         const session = getCurrentUser();
         if (session) {
           setCurrentUser(session);
@@ -74,7 +82,8 @@ export const App: React.FC = () => {
     const truckCounts: Record<string, number> = {};
     members.forEach(m => {
       const deliversOnDay = m.deliveryDays.some(d => d.includes(selectedDay) || selectedDay.includes(d));
-      if (deliversOnDay && m.truckNo) {
+      const conditionMatches = shouldIncludeMemberByCondition(m.deliveryCondition, conditionFilter);
+      if (deliversOnDay && conditionMatches && m.truckNo) {
         truckCounts[m.truckNo] = (truckCounts[m.truckNo] || 0) + 1;
       }
     });
@@ -82,7 +91,7 @@ export const App: React.FC = () => {
     const list = Object.entries(truckCounts).map(([truckNo, count]) => ({ truckNo, count }));
     list.sort((a, b) => b.count - a.count);
     return list;
-  }, [members, selectedDay]);
+  }, [members, selectedDay, conditionFilter]);
 
   useEffect(() => {
     if (currentUser?.role === 'driver' && currentUser.assignedTruck) {
@@ -94,8 +103,13 @@ export const App: React.FC = () => {
     }
   }, [availableTrucks, selectedTruck, currentUser]);
 
-  // 3. Load or Build Stops for [selectedTruck, selectedDay]
-  const loadStopsForRoute = useCallback(async (truck: string, day: DayOfWeek, currentMembers: Member[]) => {
+  // 3. Load or Build Stops for [selectedTruck, selectedDay, conditionFilter]
+  const loadStopsForRoute = useCallback(async (
+    truck: string, 
+    day: DayOfWeek, 
+    currentMembers: Member[],
+    filter: DeliveryConditionFilter
+  ) => {
     if (!truck) return;
 
     const savedRoute = await getRoute(truck, day);
@@ -115,10 +129,12 @@ export const App: React.FC = () => {
       return;
     }
 
+    // Default stops: Regular round + any matched condition
     const dayFilteredMembers = currentMembers.filter(m => {
       const matchTruck = m.truckNo === truck;
       const matchDay = m.deliveryDays.some(d => d.includes(day) || day.includes(d));
-      return matchTruck && matchDay;
+      const matchCondition = shouldIncludeMemberByCondition(m.deliveryCondition, filter);
+      return matchTruck && matchDay && matchCondition;
     });
 
     const defaultStops: DeliveryStop[] = dayFilteredMembers.map((m, idx) => ({
@@ -133,10 +149,10 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (!isLoading && selectedTruck) {
-      loadStopsForRoute(selectedTruck, selectedDay, members);
+      loadStopsForRoute(selectedTruck, selectedDay, members, conditionFilter);
       saveLastTruck(selectedTruck);
     }
-  }, [selectedTruck, selectedDay, members, isLoading, loadStopsForRoute]);
+  }, [selectedTruck, selectedDay, members, isLoading, conditionFilter, loadStopsForRoute]);
 
   // 4. Save Route to DB
   const handleSaveRoute = async () => {
@@ -175,7 +191,6 @@ export const App: React.FC = () => {
     setMembers(seed);
   };
 
-  // Auth Handlers
   const handleLoginSuccess = (user: AuthUser) => {
     setCurrentUser(user);
     setCurrentRole(user.role);
@@ -235,6 +250,8 @@ export const App: React.FC = () => {
             onSaveRoute={handleSaveRoute}
             isSaving={isSaving}
             onLoadInitialData={handleLoadInitialData}
+            conditionFilter={conditionFilter}
+            onConditionFilterChange={setConditionFilter}
           />
         ) : (
           <DriverView

@@ -1,7 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { Member, DeliveryStop, DayOfWeek } from '../types/delivery';
+import { DeliveryConditionFilter } from '../services/weekHelper';
 import { MapView } from './MapView';
 import { MemberModal } from './MemberModal';
+import { AddStopModal } from './AddStopModal';
 import { autoSequenceStops, AutoSequenceMode } from '../services/autoSequence';
 import { parseExcelFile } from '../services/excelParser';
 import { saveMembers } from '../services/db';
@@ -19,6 +21,8 @@ interface OfficeViewProps {
   onSaveRoute: () => Promise<void>;
   isSaving: boolean;
   onLoadInitialData: () => void;
+  conditionFilter: DeliveryConditionFilter;
+  onConditionFilterChange: (filter: DeliveryConditionFilter) => void;
 }
 
 const DAYS_LIST: DayOfWeek[] = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
@@ -35,10 +39,13 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
   availableTrucks,
   onSaveRoute,
   isSaving,
-  onLoadInitialData
+  onLoadInitialData,
+  conditionFilter,
+  onConditionFilterChange
 }) => {
   const [selectedStop, setSelectedStop] = useState<DeliveryStop | null>(null);
   const [editingMember, setEditingMember] = useState<Member | null>(null);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccessMsg, setUploadSuccessMsg] = useState<string | null>(null);
@@ -49,7 +56,8 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
     return stops.filter(s => 
       s.member.name.toLowerCase().includes(q) ||
       s.member.id.toLowerCase().includes(q) ||
-      (s.member.receiveType && s.member.receiveType.toLowerCase().includes(q))
+      (s.member.receiveType && s.member.receiveType.toLowerCase().includes(q)) ||
+      (s.member.deliveryCondition && s.member.deliveryCondition.toLowerCase().includes(q))
     );
   }, [stops, searchQuery]);
 
@@ -99,6 +107,24 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
     onStopsChange(resequenced);
   };
 
+  const handleRemoveStop = (memberId: string) => {
+    const remaining = stops.filter(s => s.member.id !== memberId);
+    const resequenced = remaining.map((s, idx) => ({ ...s, sequence: idx + 1 }));
+    onStopsChange(resequenced);
+  };
+
+  const handleAddStopFromModal = (member: Member) => {
+    const schedule = member.schedules?.[selectedDay];
+    const newStop: DeliveryStop = {
+      sequence: stops.length + 1,
+      member,
+      daySchedule: schedule,
+      isCompleted: false
+    };
+    onStopsChange([...stops, newStop]);
+    setIsAddModalOpen(false);
+  };
+
   const handleAutoSequence = (mode: AutoSequenceMode) => {
     const sorted = autoSequenceStops(stops, mode, selectedDay);
     onStopsChange(sorted);
@@ -111,10 +137,10 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
     <div className="space-y-4">
       
       {/* Top Filter & Operations Panel */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
+        
+        {/* Row 1: Day selection & File actions */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          
-          {/* Day selection */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-1">
               รอบวันส่ง:
@@ -136,7 +162,6 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
             </div>
           </div>
 
-          {/* Action Buttons: Excel Import & Sample Data */}
           <div className="flex items-center gap-2">
             <label className="inline-flex items-center px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-medium cursor-pointer transition">
               <span>{isUploading ? 'กำลังประมวลผล...' : 'นำเข้าไฟล์ Excel สมาชิก'}</span>
@@ -158,17 +183,87 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
               </button>
             )}
           </div>
-
         </div>
 
         {uploadSuccessMsg && (
-          <div className="mt-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs font-medium">
+          <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs font-medium">
             {uploadSuccessMsg}
           </div>
         )}
 
-        {/* Row 2: Truck Selector & Auto-sorting */}
-        <div className="mt-3 pt-3 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        {/* Row 2: Delivery Conditions Filter (New Feature: Default รอบปกติ, toggle others) */}
+        <div className="pt-2.5 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+          
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="font-semibold text-slate-600">เงื่อนไขรอบส่ง:</span>
+            
+            {/* รอบปกติ (Default On) */}
+            <label className="inline-flex items-center gap-1.5 cursor-pointer bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+              <input
+                type="checkbox"
+                checked={conditionFilter.includeRegular}
+                onChange={e => onConditionFilterChange({ ...conditionFilter, includeRegular: e.target.checked })}
+                className="rounded border-slate-300 text-slate-900 focus:ring-0 cursor-pointer"
+              />
+              <span className="font-medium text-slate-800">รอบปกติ (ประจำสัปดาห์)</span>
+            </label>
+
+            {/* รอบเว้นรอบ */}
+            <label className="inline-flex items-center gap-1.5 cursor-pointer bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+              <input
+                type="checkbox"
+                checked={conditionFilter.includeBiWeekly}
+                onChange={e => onConditionFilterChange({ ...conditionFilter, includeBiWeekly: e.target.checked })}
+                className="rounded border-slate-300 text-purple-600 focus:ring-0 cursor-pointer"
+              />
+              <span className="font-medium text-purple-900">รวมรอบเว้นรอบ</span>
+            </label>
+
+            {/* โทรสั่งก่อนน้ำหมด */}
+            <label className="inline-flex items-center gap-1.5 cursor-pointer bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+              <input
+                type="checkbox"
+                checked={conditionFilter.includeOnDemand}
+                onChange={e => onConditionFilterChange({ ...conditionFilter, includeOnDemand: e.target.checked })}
+                className="rounded border-slate-300 text-amber-600 focus:ring-0 cursor-pointer"
+              />
+              <span className="font-medium text-amber-900">รวมโทรสั่งก่อนน้ำหมด</span>
+            </label>
+
+            {/* สัปดาห์ที่ 1 - 4 ของเดือน */}
+            <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">
+              <span className="text-slate-500">สัปดาห์ของเดือน:</span>
+              <select
+                value={conditionFilter.selectedMonthlyWeek ?? ''}
+                onChange={e => {
+                  const val = e.target.value ? parseInt(e.target.value, 10) : null;
+                  onConditionFilterChange({ ...conditionFilter, selectedMonthlyWeek: val });
+                }}
+                className="bg-transparent font-medium text-slate-800 focus:outline-none cursor-pointer"
+              >
+                <option value="">ไม่ระบุสัปดาห์</option>
+                <option value="1">สัปดาห์ที่ 1</option>
+                <option value="2">สัปดาห์ที่ 2</option>
+                <option value="3">สัปดาห์ที่ 3</option>
+                <option value="4">สัปดาห์ที่ 4</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Button: Add On-demand Stop */}
+          <div>
+            <button
+              onClick={() => setIsAddModalOpen(true)}
+              className="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-medium text-xs shadow-sm transition"
+            >
+              + แทรกงานส่ง (โทรสั่ง/รอบเว้นรอบ)
+            </button>
+          </div>
+
+        </div>
+
+        {/* Row 3: Truck Selector & Auto-sorting */}
+        <div className="pt-2.5 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
           
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-slate-600">สายรถ:</span>
@@ -185,7 +280,6 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
             </select>
           </div>
 
-          {/* Auto Sequence Buttons */}
           <div className="flex items-center gap-2 flex-wrap">
             <div className="inline-flex items-center bg-slate-50 border border-slate-200 rounded-lg p-0.5 text-xs">
               <span className="px-2.5 text-slate-500 font-medium">จัดเรียงอัตโนมัติ:</span>
@@ -296,6 +390,17 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                 const actualMin = actualAvgMin ? (actualAvgMin % 60) : null;
                 const actualTimeStr = actualHour !== null ? `${String(actualHour).padStart(2, '0')}:${String(actualMin).padStart(2, '0')} น.` : null;
 
+                // Condition badge style
+                const cond = stop.member.deliveryCondition || 'รอบปกติ';
+                let condBadge = 'bg-slate-100 text-slate-700 border-slate-200';
+                if (cond.includes('โทรสั่ง')) {
+                  condBadge = 'bg-amber-50 text-amber-800 border-amber-200 font-semibold';
+                } else if (cond.includes('รอบเว้นรอบ')) {
+                  condBadge = 'bg-purple-50 text-purple-800 border-purple-200 font-semibold';
+                } else if (cond.includes('สัปดาห์ที่')) {
+                  condBadge = 'bg-blue-50 text-blue-800 border-blue-200 font-semibold';
+                }
+
                 return (
                   <div
                     key={stop.member.id}
@@ -325,6 +430,9 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                           <span className="text-slate-400 text-[10px]">
                             #{stop.member.id}
                           </span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded border ${condBadge}`}>
+                            {cond}
+                          </span>
                         </div>
 
                         <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 flex-wrap">
@@ -344,7 +452,7 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Actions: Move Up / Down & Edit */}
+                    {/* Actions: Move Up / Down & Remove / Edit */}
                     <div className="flex flex-col items-end gap-1 shrink-0">
                       <div className="flex items-center gap-0.5">
                         <button
@@ -371,15 +479,27 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                         </button>
                       </div>
 
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditingMember(stop.member);
-                        }}
-                        className="text-[10px] text-blue-600 hover:text-blue-800 font-medium"
-                      >
-                        ข้อมูล/แนบไฟล์
-                      </button>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingMember(stop.member);
+                          }}
+                          className="text-[10px] text-blue-600 hover:text-blue-800 font-medium"
+                        >
+                          ข้อมูล/แนบไฟล์
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveStop(stop.member.id);
+                          }}
+                          title="ลบออกจากสายส่งวันนี้"
+                          className="text-[10px] text-red-500 hover:text-red-700 font-medium"
+                        >
+                          ลบออก
+                        </button>
+                      </div>
                     </div>
 
                   </div>
@@ -392,6 +512,7 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
 
       </div>
 
+      {/* Member Details Modal */}
       {editingMember && (
         <MemberModal
           member={editingMember}
@@ -404,6 +525,18 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
             const updatedMembers = members.map(m => m.id === updated.id ? updated : m);
             onMembersUpdated(updatedMembers);
           }}
+        />
+      )}
+
+      {/* Add Stop Modal (For inserting On-Demand, Bi-weekly, or other stops) */}
+      {isAddModalOpen && (
+        <AddStopModal
+          allMembers={members}
+          currentStops={stops}
+          selectedTruck={selectedTruck}
+          selectedDay={selectedDay}
+          onAddStop={handleAddStopFromModal}
+          onClose={() => setIsAddModalOpen(false)}
         />
       )}
 

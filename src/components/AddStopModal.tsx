@@ -1,0 +1,197 @@
+import React, { useState, useMemo } from 'react';
+import { Member, DeliveryStop, DayOfWeek } from '../types/delivery';
+
+interface AddStopModalProps {
+  allMembers: Member[];
+  currentStops: DeliveryStop[];
+  selectedTruck: string;
+  selectedDay: DayOfWeek;
+  onAddStop: (member: Member) => void;
+  onClose: () => void;
+}
+
+export const AddStopModal: React.FC<AddStopModalProps> = ({
+  allMembers,
+  currentStops,
+  selectedTruck,
+  selectedDay,
+  onAddStop,
+  onClose
+}) => {
+  const [search, setSearch] = useState('');
+  const [conditionTab, setConditionTab] = useState<'all' | 'ondemand' | 'biweekly' | 'monthly'>('ondemand');
+
+  // Set of member IDs already in currentStops
+  const existingIds = useMemo(() => new Set(currentStops.map(s => s.member.id)), [currentStops]);
+
+  // Filter candidates
+  const candidates = useMemo(() => {
+    return allMembers.filter(m => {
+      // Must not already be in current stops
+      if (existingIds.has(m.id)) return false;
+
+      // Check condition tab
+      if (conditionTab === 'ondemand' && !m.deliveryCondition.includes('โทรสั่ง')) return false;
+      if (conditionTab === 'biweekly' && !m.deliveryCondition.includes('รอบเว้นรอบ')) return false;
+      if (conditionTab === 'monthly' && !m.deliveryCondition.includes('สัปดาห์ที่')) return false;
+
+      // Check search
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        const matchName = m.name.toLowerCase().includes(q);
+        const matchId = m.id.toLowerCase().includes(q);
+        const matchTruck = m.truckNo.toLowerCase().includes(q);
+        return matchName || matchId || matchTruck;
+      }
+
+      // If no search, prioritize members belonging to this truck
+      return m.truckNo === selectedTruck;
+    });
+  }, [allMembers, existingIds, conditionTab, search, selectedTruck]);
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden border border-slate-200">
+        
+        {/* Header */}
+        <div className="bg-slate-900 text-white px-5 py-3.5 flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold text-sm">เพิ่มจุดส่งแทรก (โทรสั่งก่อนน้ำหมด / รอบเว้นรอบ / รอบสัปดาห์)</h3>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              เลือกลูกค้าที่โทรสั่งหรือต้องการส่งเพิ่มเข้าสายรถ {selectedTruck} วัน {selectedDay}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-white text-xs px-2 py-1 rounded"
+          >
+            ปิด
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-4 space-y-3 text-xs">
+          
+          {/* Condition Filter Tabs */}
+          <div className="flex border-b border-slate-200 pb-2 gap-2 text-xs">
+            <button
+              onClick={() => setConditionTab('ondemand')}
+              className={`px-3 py-1 rounded-lg font-medium transition ${
+                conditionTab === 'ondemand'
+                  ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              โทรสั่งก่อนน้ำหมด
+            </button>
+            <button
+              onClick={() => setConditionTab('biweekly')}
+              className={`px-3 py-1 rounded-lg font-medium transition ${
+                conditionTab === 'biweekly'
+                  ? 'bg-purple-100 text-purple-900 border border-purple-300'
+                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              รอบเว้นรอบ
+            </button>
+            <button
+              onClick={() => setConditionTab('monthly')}
+              className={`px-3 py-1 rounded-lg font-medium transition ${
+                conditionTab === 'monthly'
+                  ? 'bg-blue-100 text-blue-900 border border-blue-300'
+                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              สัปดาห์ที่ 1 - 4
+            </button>
+            <button
+              onClick={() => setConditionTab('all')}
+              className={`px-3 py-1 rounded-lg font-medium transition ${
+                conditionTab === 'all'
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              ทั้งหมด
+            </button>
+          </div>
+
+          {/* Search Input */}
+          <div>
+            <input
+              type="text"
+              placeholder="ค้นหาชื่อ, รหัสสมาชิก หรือเบอร์รถ..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-900"
+            />
+          </div>
+
+          {/* Candidates List */}
+          <div className="max-h-[360px] overflow-y-auto space-y-1.5 border border-slate-200 rounded-xl p-2 bg-slate-50">
+            {candidates.length === 0 ? (
+              <div className="py-8 text-center text-slate-400">
+                ไม่พบสมาชิกที่ตรงกับเงื่อนไข หรือสมาชิกอยู่ในสายส่งแล้ว
+              </div>
+            ) : (
+              candidates.slice(0, 50).map(member => {
+                const schedule = member.schedules?.[selectedDay];
+                const timeStr = schedule?.timeWindow || member.targetTime || 'ไม่ระบุ';
+                const avgBottles = schedule?.avgQuantity || 0;
+
+                let condBadgeColor = 'bg-slate-100 text-slate-700 border-slate-200';
+                if (member.deliveryCondition.includes('โทรสั่ง')) {
+                  condBadgeColor = 'bg-amber-50 text-amber-800 border-amber-200';
+                } else if (member.deliveryCondition.includes('รอบเว้นรอบ')) {
+                  condBadgeColor = 'bg-purple-50 text-purple-800 border-purple-200';
+                } else if (member.deliveryCondition.includes('สัปดาห์ที่')) {
+                  condBadgeColor = 'bg-blue-50 text-blue-800 border-blue-200';
+                }
+
+                return (
+                  <div
+                    key={member.id}
+                    className="p-2.5 bg-white rounded-lg border border-slate-200 hover:border-slate-300 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-900 truncate">
+                          {member.name}
+                        </span>
+                        <span className="text-slate-400 text-[10px]">
+                          #{member.id}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.2 rounded border font-medium ${condBadgeColor}`}>
+                          {member.deliveryCondition}
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+                        <span>สายรถประจำ: <strong>{member.truckNo}</strong></span>
+                        <span>•</span>
+                        <span>เวลา: {timeStr}</span>
+                        <span>•</span>
+                        <span>จำนวน: {avgBottles} ถัง</span>
+                        <span>•</span>
+                        <span className="truncate">{member.receiveType}</span>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => onAddStop(member)}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium text-xs whitespace-nowrap shadow-sm transition"
+                    >
+                      + เพิ่มเข้าสายส่ง
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+  );
+};
