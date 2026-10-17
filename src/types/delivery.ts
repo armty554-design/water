@@ -43,6 +43,7 @@ export interface Member {
   hasGps: boolean;
   targetTime?: string; // Col 16 เช่น "0900", "0000"
   rawScheduleText?: string;
+  avgMonthlyBottles?: number; // ยอดส่งเฉลี่ยต่อเดือนจากไฟล์ ยอดเฉลี่ย.xlsx
   schedules: Record<string, DaySchedule>; // key = DayOfWeek (e.g. "จันทร์")
   attachments?: Attachment[];
 }

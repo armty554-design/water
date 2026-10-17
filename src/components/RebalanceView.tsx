@@ -10,6 +10,7 @@ import {
 } from '../services/rebalance';
 import { saveMembers } from '../services/db';
 import { saveMembersToCloud, isFirebaseConfigured } from '../services/firebase';
+import { parseAvgBottlesFile, mergeAvgBottlesIntoMembers } from '../services/excelParser';
 
 interface RebalanceViewProps {
   members: Member[];
@@ -249,6 +250,34 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     setApplySuccessMsg(null);
   };
 
+  const handleAvgBottlesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const buffer = event.target?.result as ArrayBuffer;
+        const avgMap = parseAvgBottlesFile(buffer);
+        if (avgMap.size > 0) {
+          const { updatedMembers, matchedCount } = mergeAvgBottlesIntoMembers(members, avgMap);
+          await saveMembers(updatedMembers);
+          onMembersUpdated(updatedMembers);
+          if (isFirebaseConfigured()) {
+            saveMembersToCloud(updatedMembers);
+          }
+          setApplySuccessMsg(`นำเข้า ยอดเฉลี่ย.xlsx สำเร็จ! อัปเดตข้อมูลสมาชิกตรงกัน ${matchedCount.toLocaleString()} รายการ`);
+        } else {
+          alert('ไม่พบข้อมูลยอดเฉลี่ยในไฟล์');
+        }
+      } catch (err) {
+        console.error(err);
+        alert('เกิดข้อผิดพลาดในการอ่านไฟล์ยอดเฉลี่ย');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   // Apply Rebalance to Database and Firestore
   const handleApplyRebalance = async () => {
     if (!simulationResult) return;
@@ -434,6 +463,19 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
         {/* Action Controls */}
         <div className="flex flex-wrap items-center gap-2">
+          <label 
+            title="อัปเดตไฟล์ ยอดเฉลี่ย.xlsx เพื่อนำเข้ายอดส่งเฉลี่ยจริง"
+            className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 shadow-xs transition"
+          >
+            <span>📊 อัปเดต ยอดเฉลี่ย.xlsx</span>
+            <input 
+              type="file" 
+              accept=".xlsx,.xls" 
+              onChange={handleAvgBottlesUpload} 
+              className="hidden" 
+            />
+          </label>
+
           {simulationResult && (
             <>
               <button

@@ -222,3 +222,52 @@ export function parseExcelFile(arrayBuffer: ArrayBuffer): Member[] {
 
   return members;
 }
+
+/**
+ * Parses ยอดเฉลี่ย.xlsx containing member ID and average volume.
+ * Supports header 'รหัสสมาชิก', 'เบอร์รถ', 'รหัส' in Col 0, and 'ยอดเฉลี่ย' in Col 1.
+ */
+export function parseAvgBottlesFile(buffer: ArrayBuffer): Map<string, number> {
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+  const avgMap = new Map<string, number>();
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row[0] === undefined) continue;
+
+    const memberId = String(row[0]).trim();
+    const avgVolume = parseFloat(row[1]);
+
+    if (memberId && !isNaN(avgVolume)) {
+      avgMap.set(memberId, avgVolume);
+    }
+  }
+
+  return avgMap;
+}
+
+/**
+ * Merges average bottle counts from ยอดเฉลี่ย.xlsx into Member list.
+ */
+export function mergeAvgBottlesIntoMembers(members: Member[], avgMap: Map<string, number>): {
+  updatedMembers: Member[];
+  matchedCount: number;
+} {
+  let matchedCount = 0;
+  const updatedMembers = members.map(m => {
+    if (avgMap.has(m.id)) {
+      matchedCount++;
+      return {
+        ...m,
+        avgMonthlyBottles: avgMap.get(m.id)
+      };
+    }
+    return m;
+  });
+
+  return { updatedMembers, matchedCount };
+}
+

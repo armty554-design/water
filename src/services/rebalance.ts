@@ -14,6 +14,11 @@ import { calculateDistanceKm } from './autoSequence';
  * Formula considers scheduled drop quantities and frequency per month.
  */
 export function calculateMemberMonthlyBottles(member: Member): number {
+  // 1. If member has explicit average bottles from ยอดเฉลี่ย.xlsx, prioritize it!
+  if (typeof member.avgMonthlyBottles === 'number' && member.avgMonthlyBottles >= 0) {
+    return Math.round(member.avgMonthlyBottles * 10) / 10;
+  }
+
   let totalBottles = 0;
   const condition = member.deliveryCondition || '';
 
