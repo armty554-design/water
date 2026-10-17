@@ -12,6 +12,7 @@ import { SyncReportModal } from './SyncReportModal';
 import { autoSequenceStops, AutoSequenceMode } from '../services/autoSequence';
 import { parseExcelFile } from '../services/excelParser';
 import { saveMembers } from '../services/db';
+import { TruckSelector } from './TruckSelector';
 
 interface OfficeViewProps {
   members: Member[];
@@ -347,17 +348,11 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
           
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-slate-600">สายรถ:</span>
-            <select
+            <TruckSelector
               value={selectedTruck}
-              onChange={(e) => onTruckChange(e.target.value)}
-              className="text-xs font-medium bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-1 focus:ring-slate-900 focus:outline-none"
-            >
-              {availableTrucks.map((t) => (
-                <option key={t.truckNo} value={t.truckNo}>
-                  สายรถ {t.truckNo} ({t.count} จุดส่ง)
-                </option>
-              ))}
-            </select>
+              onChange={onTruckChange}
+              availableTrucks={availableTrucks}
+            />
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">

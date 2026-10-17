@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { DeliveryStop, DayOfWeek } from '../types/delivery';
 import { MapView } from './MapView';
 import { formatDateThai, getTodayDateKey, getRelativeDateKey } from '../services/weekHelper';
+import { TruckSelector } from './TruckSelector';
 
 interface DriverViewProps {
   stops: DeliveryStop[];
@@ -65,17 +66,11 @@ export const DriverView: React.FC<DriverViewProps> = ({
           <div className="flex items-center gap-2.5 flex-wrap">
             <div className="flex items-center gap-1.5 text-xs">
               <span className="font-semibold text-slate-500">สายรถ:</span>
-              <select
+              <TruckSelector
                 value={selectedTruck}
-                onChange={(e) => onTruckChange(e.target.value)}
-                className="bg-slate-50 border border-slate-300 font-bold text-slate-900 text-xs rounded-lg px-2 py-1 focus:outline-none"
-              >
-                {availableTrucks.map(t => (
-                  <option key={t.truckNo} value={t.truckNo}>
-                    สาย {t.truckNo} ({t.count} จุด)
-                  </option>
-                ))}
-              </select>
+                onChange={onTruckChange}
+                availableTrucks={availableTrucks}
+              />
             </div>
 
             {/* Quick date pills */}

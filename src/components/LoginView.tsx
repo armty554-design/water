@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AuthUser } from '../types/auth';
 import { loginOffice, loginDriver } from '../services/auth';
+import { TruckSelector } from './TruckSelector';
 
 interface LoginViewProps {
   onLoginSuccess: (user: AuthUser) => void;
@@ -150,20 +151,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 <label className="block text-slate-700 font-medium mb-1">
                   เลือกรหัสสายรถประจำ
                 </label>
-                <select
+                <TruckSelector
                   value={truckNo}
-                  onChange={e => setTruckNo(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-semibold focus:ring-1 focus:ring-blue-600 focus:outline-none bg-white"
-                >
-                  {availableTrucks.map(t => (
-                    <option key={t.truckNo} value={t.truckNo}>
-                      สายรถ {t.truckNo} ({t.count} จุดส่ง)
-                    </option>
-                  ))}
-                  {availableTrucks.length === 0 && (
-                    <option value="13106">สายรถ 13106</option>
-                  )}
-                </select>
+                  onChange={setTruckNo}
+                  availableTrucks={availableTrucks}
+                  fullWidth={true}
+                />
               </div>
 
               <div>
