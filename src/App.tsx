@@ -83,19 +83,33 @@ export const App: React.FC = () => {
     initData();
   }, []);
 
-  // 2. Compute Available Trucks for the Selected Day
+  // 2. Compute Available Trucks for the Selected Day (includes all trucks, sorted by today's stops)
   const availableTrucks = useMemo(() => {
+    const allTrucksSet = new Set<string>();
+    members.forEach(m => {
+      if (m.truckNo && m.truckNo.trim()) allTrucksSet.add(m.truckNo.trim());
+    });
+
     const truckCounts: Record<string, number> = {};
     members.forEach(m => {
       const deliversOnDay = m.deliveryDays.some(d => d.includes(selectedDay) || selectedDay.includes(d));
       const conditionMatches = shouldIncludeMemberByCondition(m.deliveryCondition, conditionFilter);
       if (deliversOnDay && conditionMatches && m.truckNo) {
-        truckCounts[m.truckNo] = (truckCounts[m.truckNo] || 0) + 1;
+        const t = m.truckNo.trim();
+        truckCounts[t] = (truckCounts[t] || 0) + 1;
       }
     });
 
-    const list = Object.entries(truckCounts).map(([truckNo, count]) => ({ truckNo, count }));
-    list.sort((a, b) => b.count - a.count);
+    const list = Array.from(allTrucksSet).map(truckNo => ({
+      truckNo,
+      count: truckCounts[truckNo] || 0
+    }));
+
+    list.sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.truckNo.localeCompare(b.truckNo);
+    });
+
     return list;
   }, [members, selectedDay, conditionFilter]);
 
@@ -104,7 +118,8 @@ export const App: React.FC = () => {
       setSelectedTruck(currentUser.assignedTruck);
       return;
     }
-    if (availableTrucks.length > 0 && !availableTrucks.some(t => t.truckNo === selectedTruck)) {
+    // Only pick a default truck if none is selected yet
+    if (!selectedTruck && availableTrucks.length > 0) {
       setSelectedTruck(availableTrucks[0].truckNo);
     }
   }, [availableTrucks, selectedTruck, currentUser]);
