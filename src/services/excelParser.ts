@@ -110,46 +110,72 @@ export function parseExcelFile(arrayBuffer: ArrayBuffer): Member[] {
     headerIndex = 5; // default fallback
   }
 
-  let addressColIndex = -1;
-  if (rows[headerIndex]) {
-    addressColIndex = rows[headerIndex].findIndex(cell => 
-      typeof cell === 'string' && (cell.includes('ที่อยู่') || cell.toLowerCase().includes('address'))
+  const headerRow: any[] = rows[headerIndex] || [];
+  const findCol = (keywords: string[], fallback: number): number => {
+    const idx = headerRow.findIndex(cell => 
+      typeof cell === 'string' && keywords.some(k => cell.includes(k) || cell.toLowerCase().includes(k.toLowerCase()))
     );
-  }
+    return idx !== -1 ? idx : fallback;
+  };
+
+  // Dynamically detect column indices to support both new and old Excel formats
+  const colId = findCol(['รหัสสมาชิก', 'id'], 0);
+  const colName = findCol(['ชื่อ-นามสกุล', 'ชื่อ', 'name'], 1);
+  const colAddress = findCol(['ที่อยู่จัดส่ง', 'ที่อยู่', 'address'], -1);
+  const colDays = findCol(['รอบส่งประจำสัปดาห์', 'รอบส่ง'], 2);
+  const colAddRound = findCol(['รอบเสริม'], 3);
+  const colTruck = findCol(['เบอร์รถ', 'สายรถ', 'truck'], 4);
+  const colReceive = findCol(['ประเภทการรับน้ำ', 'รับน้ำ'], 5);
+  const colCondition = findCol(['เงื่อนไขการจัดส่ง', 'เงื่อนไข'], 6);
+  const colGroup = findCol(['กลุ่มลูกค้า'], 7);
+  const colWarning = findCol(['เฝ้าระวัง'], 8);
+  const colHighBuilding = findCol(['อาคารสูง'], 9);
+  const colECoupon = findCol(['อี-คูปอง', 'e-coupon'], 10);
+  const colRiskDamaged = findCol(['ถังน้ำดื่มเสียหาย'], 11);
+  const colLastMove = findCol(['ย้ายรอบส่ง'], 12);
+  const colCouponPlan = findCol(['แผนการเติมคูปอง'], 13);
+  const colStatus = findCol(['สถานะลูกค้า', 'สถานะ'], 14);
+  const colGps = findCol(['พิกัด GPS', 'GPS'], 15);
+  const colSchedule = findCol(['ยอดส่งเฉลี่ย', 'เวลาส่งเฉลี่ย', 'avg', '4รอบ'], 17);
+
+  // Check if there is a separate target time column
+  const colTargetTime = headerRow.findIndex((cell, idx) => 
+    idx !== colSchedule && typeof cell === 'string' && cell.trim() === 'เวลา'
+  );
 
   const members: Member[] = [];
 
   for (let i = headerIndex + 1; i < rows.length; i++) {
     const row = rows[i];
-    if (!row || !row[0]) continue;
+    if (!row || !row[colId]) continue;
 
-    const id = String(row[0]).trim();
-    const name = String(row[1] || '').trim();
+    const id = String(row[colId]).trim();
+    const name = String(row[colName] || '').trim();
     if (!id || !name) continue;
 
-    const rawDays = String(row[2] || '').trim();
+    const rawDays = colDays !== -1 && row[colDays] ? String(row[colDays]).trim() : '';
     const deliveryDays = rawDays
       ? rawDays.split(',').map(s => s.trim()).filter(Boolean)
       : [];
 
-    const additionalRound = row[3] ? String(row[3]).trim() : undefined;
-    const truckNo = String(row[4] || 'ไม่ระบุ').trim();
-    const receiveType = String(row[5] || 'ปกติ').trim();
-    const deliveryCondition = String(row[6] || 'รอบปกติ').trim();
-    const customerGroup = String(row[7] || '').trim();
-    const warningNotes = row[8] ? String(row[8]).trim() : undefined;
-    const isHighBuildingNoElevator = Boolean(row[9]);
-    const isECoupon = Boolean(row[10]);
-    const riskDamagedBottles = Boolean(row[11]);
-    const lastRoundMoveDate = row[12] ? String(row[12]).trim() : undefined;
-    const couponPlan = row[13] ? String(row[13]).trim() : undefined;
-    const status = String(row[14] || 'ปกติ').trim();
+    const additionalRound = colAddRound !== -1 && row[colAddRound] ? String(row[colAddRound]).trim() : undefined;
+    const truckNo = colTruck !== -1 && row[colTruck] ? String(row[colTruck]).trim() : 'ไม่ระบุ';
+    const receiveType = colReceive !== -1 && row[colReceive] ? String(row[colReceive]).trim() : 'ปกติ';
+    const deliveryCondition = colCondition !== -1 && row[colCondition] ? String(row[colCondition]).trim() : 'รอบปกติ';
+    const customerGroup = colGroup !== -1 && row[colGroup] ? String(row[colGroup]).trim() : '';
+    const warningNotes = colWarning !== -1 && row[colWarning] ? String(row[colWarning]).trim() : undefined;
+    const isHighBuildingNoElevator = colHighBuilding !== -1 ? Boolean(row[colHighBuilding]) : false;
+    const isECoupon = colECoupon !== -1 ? Boolean(row[colECoupon]) : false;
+    const riskDamagedBottles = colRiskDamaged !== -1 ? Boolean(row[colRiskDamaged]) : false;
+    const lastRoundMoveDate = colLastMove !== -1 && row[colLastMove] ? String(row[colLastMove]).trim() : undefined;
+    const couponPlan = colCouponPlan !== -1 && row[colCouponPlan] ? String(row[colCouponPlan]).trim() : undefined;
+    const status = colStatus !== -1 && row[colStatus] ? String(row[colStatus]).trim() : 'ปกติ';
 
     // Parse GPS
     let lat = 0;
     let lng = 0;
     let hasGps = false;
-    const rawGps = row[15] ? String(row[15]).trim() : '';
+    const rawGps = colGps !== -1 && row[colGps] ? String(row[colGps]).trim() : '';
     if (rawGps && rawGps.includes(',')) {
       const parts = rawGps.split(',').map(p => parseFloat(p.trim()));
       if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
@@ -159,10 +185,13 @@ export function parseExcelFile(arrayBuffer: ArrayBuffer): Member[] {
       }
     }
 
-    const targetTime = row[16] !== undefined ? String(row[16]).trim() : undefined;
-    const rawScheduleText = row[17] ? String(row[17]).trim() : '';
+    const targetTime = colTargetTime !== -1 && row[colTargetTime] !== undefined 
+      ? String(row[colTargetTime]).trim() 
+      : undefined;
+
+    const rawScheduleText = colSchedule !== -1 && row[colSchedule] ? String(row[colSchedule]).trim() : '';
     const schedules = parseScheduleText(rawScheduleText);
-    const address = addressColIndex !== -1 && row[addressColIndex] ? String(row[addressColIndex]).trim() : undefined;
+    const address = colAddress !== -1 && row[colAddress] ? String(row[colAddress]).trim() : undefined;
 
     members.push({
       id,
