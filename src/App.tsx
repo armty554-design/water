@@ -344,14 +344,13 @@ export const App: React.FC = () => {
           <span className="hidden sm:inline text-slate-300">•</span>
           <span>
             พัฒนาและออกแบบโดย{' '}
-            <a 
-              href="https://github.com/armty554-design" 
-              target="_blank" 
-              rel="noreferrer" 
-              className="font-semibold text-slate-800 hover:text-blue-600 underline decoration-slate-300 transition"
+            <strong className="text-slate-800 font-semibold">Wuttichai</strong>{' '}
+            (<a 
+              href="mailto:wuttichai@sprinkle-th.com" 
+              className="text-slate-700 hover:text-blue-600 underline transition"
             >
-              armty554-design
-            </a>
+              wuttichai@sprinkle-th.com
+            </a>)
           </span>
         </div>
       </footer>

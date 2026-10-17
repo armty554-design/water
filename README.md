@@ -74,6 +74,7 @@ git push -u origin main
 ---
 
 ## 👨‍💻 ผู้พัฒนาและลิขสิทธิ์ (Author & Credits)
-- **พัฒนาและออกแบบโดย**: [armty554-design](https://github.com/armty554-design)
+- **พัฒนาและออกแบบโดย**: Wuttichai ([wuttichai@sprinkle-th.com](mailto:wuttichai@sprinkle-th.com))
+- **GitHub**: [armty554-design](https://github.com/armty554-design)
 - **GitHub Repository**: [https://github.com/armty554-design/water](https://github.com/armty554-design/water)
 - **ระบบ**: AquaRoute - Water Delivery Route Dispatch & Real-Time Tracking
