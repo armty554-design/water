@@ -1,9 +1,11 @@
 import React, { useState, useMemo } from 'react';
 import { Member, DeliveryStop, DayOfWeek } from '../types/delivery';
 import { DeliveryConditionFilter } from '../services/weekHelper';
+import { syncMembersWithDiff, SyncDiffReport } from '../services/memberSync';
 import { MapView } from './MapView';
 import { MemberModal } from './MemberModal';
 import { AddStopModal } from './AddStopModal';
+import { SyncReportModal } from './SyncReportModal';
 import { autoSequenceStops, AutoSequenceMode } from '../services/autoSequence';
 import { parseExcelFile } from '../services/excelParser';
 import { saveMembers } from '../services/db';
@@ -49,6 +51,7 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccessMsg, setUploadSuccessMsg] = useState<string | null>(null);
+  const [syncReport, setSyncReport] = useState<SyncDiffReport | null>(null);
 
   const filteredStops = useMemo(() => {
     if (!searchQuery.trim()) return stops;
@@ -73,12 +76,14 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
     reader.onload = async (event) => {
       try {
         const buffer = event.target?.result as ArrayBuffer;
-        const parsed = parseExcelFile(buffer);
-        if (parsed.length > 0) {
-          await saveMembers(parsed);
-          onMembersUpdated(parsed);
-          setUploadSuccessMsg(`อัปเดตข้อมูลสำเร็จ (${parsed.length.toLocaleString()} รายการ)`);
-          setTimeout(() => setUploadSuccessMsg(null), 4000);
+        const incoming = parseExcelFile(buffer);
+        if (incoming.length > 0) {
+          const report = await syncMembersWithDiff(members, incoming);
+          await saveMembers(report.mergedMembers);
+          onMembersUpdated(report.mergedMembers);
+          setSyncReport(report);
+          setUploadSuccessMsg(`อัปเดตข้อมูลสำเร็จ: สมาชิกใหม่ +${report.addedCount} ราย, เปลี่ยนแปลง ${report.updatedCount} ราย, ลบออกจากสายเดิม ${report.cleanedRoutesCount} จุด`);
+          setTimeout(() => setUploadSuccessMsg(null), 6000);
         } else {
           alert('ไม่พบข้อมูลในไฟล์ Excel หรือโครงสร้างคอลัมน์ไม่ถูกต้อง');
         }
@@ -537,6 +542,14 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
           selectedDay={selectedDay}
           onAddStop={handleAddStopFromModal}
           onClose={() => setIsAddModalOpen(false)}
+        />
+      )}
+
+      {/* Sync Diff Report Modal */}
+      {syncReport && (
+        <SyncReportModal
+          report={syncReport}
+          onClose={() => setSyncReport(null)}
         />
       )}
 
