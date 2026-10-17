@@ -11,6 +11,8 @@ interface NavbarProps {
   activeTrucksCount: number;
   completedStopsCount: number;
   totalStopsCount: number;
+  isCloudConnected?: boolean;
+  onOpenFirebaseModal?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -21,7 +23,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   totalMembers,
   activeTrucksCount,
   completedStopsCount,
-  totalStopsCount
+  totalStopsCount,
+  isCloudConnected = false,
+  onOpenFirebaseModal
 }) => {
   return (
     <header className="sticky top-0 z-50 bg-slate-900 border-b border-slate-800 text-white shadow-sm">
@@ -58,8 +62,24 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* User Profile & Actions */}
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-2.5">
             
+            {/* Cloud Status / Setup */}
+            {onOpenFirebaseModal && (
+              <button
+                onClick={onOpenFirebaseModal}
+                title={isCloudConnected ? "เชื่อมต่อ Cloud Firestore แล้ว (คลิกเพื่อดูการตั้งค่า)" : "คลิกเพื่อเชื่อมต่อเซิร์ฟเวอร์ Firebase"}
+                className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-lg border transition ${
+                  isCloudConnected 
+                    ? 'bg-emerald-950/70 border-emerald-700/70 text-emerald-300 hover:bg-emerald-900/80 shadow-xs'
+                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${isCloudConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                <span>{isCloudConnected ? 'Cloud ออนไลน์' : 'เชื่อมต่อ Cloud'}</span>
+              </button>
+            )}
+
             {/* If Admin/Office, allow view switcher */}
             {currentUser.role === 'office' && (
               <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">

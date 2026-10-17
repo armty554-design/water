@@ -10,7 +10,8 @@ export default defineConfig({
         manualChunks: {
           'vendor-react': ['react', 'react-dom'],
           'vendor-map': ['leaflet'],
-          'vendor-xlsx': ['xlsx']
+          'vendor-xlsx': ['xlsx'],
+          'vendor-firebase': ['firebase/app', 'firebase/firestore']
         }
       }
     }

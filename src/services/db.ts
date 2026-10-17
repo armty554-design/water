@@ -1,5 +1,10 @@
 import { get, set, update } from 'idb-keyval';
 import { Member, RouteAssignment, DayOfWeek, DeliveryStop, Attachment } from '../types/delivery';
+import { 
+  saveRouteToCloud, getRouteFromCloud, markStopCompletedInCloud, 
+  saveMembersToCloud, getMembersFromCloud, subscribeToRouteCloud,
+  isFirebaseConfigured 
+} from './firebase';
 
 const MEMBERS_KEY = 'water_app_members';
 const ROUTES_KEY = 'water_app_routes';
@@ -7,10 +12,33 @@ const ATTACHMENTS_KEY = 'water_app_attachments';
 const LAST_TRUCK_KEY = 'water_app_last_truck';
 
 export async function saveMembers(members: Member[]): Promise<void> {
+  // 1. Save to local IndexedDB (fast instant response)
   await set(MEMBERS_KEY, members);
+
+  // 2. Sync to Firebase Cloud if configured
+  if (isFirebaseConfigured()) {
+    saveMembersToCloud(members).catch(err => {
+      console.warn('Background sync to Cloud failed:', err);
+    });
+  }
 }
 
 export async function getMembers(): Promise<Member[]> {
+  // 1. If Firebase is configured, try fetching latest from Cloud
+  if (isFirebaseConfigured()) {
+    try {
+      const cloudMembers = await getMembersFromCloud();
+      if (cloudMembers && cloudMembers.length > 0) {
+        // Cache to local IndexedDB
+        await set(MEMBERS_KEY, cloudMembers);
+        return cloudMembers;
+      }
+    } catch (e) {
+      console.warn('Failed to load members from cloud, fallback to local:', e);
+    }
+  }
+
+  // 2. Fallback to local IndexedDB
   const data = await get<Member[]>(MEMBERS_KEY);
   return data || [];
 }
@@ -43,12 +71,17 @@ export async function saveRoute(
     updatedAt: new Date().toISOString()
   };
 
-  // Save by specific calendar date
+  // 1. Save locally to IndexedDB
   routes[`${truckNo}_${actualDate}`] = assignment;
-  // Also save by day of week template
   routes[`${truckNo}_${day}`] = assignment;
-
   await set(ROUTES_KEY, routes);
+
+  // 2. Save to Firebase Cloud Firestore for real-time driver sync
+  if (isFirebaseConfigured()) {
+    saveRouteToCloud(assignment).catch(err => {
+      console.warn('Cloud saveRoute error:', err);
+    });
+  }
 }
 
 export async function getRoute(
@@ -56,6 +89,26 @@ export async function getRoute(
   day: DayOfWeek,
   dateKey?: string
 ): Promise<RouteAssignment | null> {
+  const actualDate = dateKey || new Date().toISOString().slice(0, 10);
+
+  // 1. If Firebase is configured, try getting latest route from Cloud
+  if (isFirebaseConfigured()) {
+    try {
+      const cloudRoute = await getRouteFromCloud(truckNo, actualDate);
+      if (cloudRoute) {
+        // Cache locally
+        const routes = (await get<Record<string, RouteAssignment>>(ROUTES_KEY)) || {};
+        routes[`${truckNo}_${actualDate}`] = cloudRoute;
+        routes[`${truckNo}_${day}`] = cloudRoute;
+        await set(ROUTES_KEY, routes);
+        return cloudRoute;
+      }
+    } catch (e) {
+      console.warn('Failed to getRoute from Cloud, using local cache:', e);
+    }
+  }
+
+  // 2. Fallback to local cache
   const routes = (await get<Record<string, RouteAssignment>>(ROUTES_KEY)) || {};
   if (dateKey && routes[`${truckNo}_${dateKey}`]) {
     return routes[`${truckNo}_${dateKey}`];
@@ -75,7 +128,8 @@ export async function markStopCompleted(
   isCompleted: boolean,
   dateKey?: string
 ): Promise<void> {
-  const route = await getRoute(truckNo, day, dateKey);
+  const actualDate = dateKey || new Date().toISOString().slice(0, 10);
+  const route = await getRoute(truckNo, day, actualDate);
   if (!route) return;
 
   const updatedStops = route.stops.map(s => {
@@ -89,7 +143,15 @@ export async function markStopCompleted(
     return s;
   });
 
-  await saveRoute(truckNo, day, updatedStops, dateKey);
+  // Save both locally and to Cloud
+  await saveRoute(truckNo, day, updatedStops, actualDate);
+
+  // Direct fast cloud update
+  if (isFirebaseConfigured()) {
+    markStopCompletedInCloud(truckNo, actualDate, memberId, isCompleted).catch(err => {
+      console.warn('Cloud markStopCompleted error:', err);
+    });
+  }
 }
 
 export async function addAttachment(memberId: string, attachment: Attachment): Promise<void> {
@@ -124,3 +186,5 @@ export async function saveLastTruck(truckNo: string): Promise<void> {
 export async function getLastTruck(): Promise<string | null> {
   return (await get<string>(LAST_TRUCK_KEY)) || null;
 }
+
+export { subscribeToRouteCloud, isFirebaseConfigured };

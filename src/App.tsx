@@ -5,10 +5,12 @@ import { Navbar } from './components/Navbar';
 import { OfficeView } from './components/OfficeView';
 import { DriverView } from './components/DriverView';
 import { LoginView } from './components/LoginView';
+import { FirebaseConfigModal } from './components/FirebaseConfigModal';
 import { 
   getMembers, saveMembers, getRoute, saveRoute, 
   markStopCompleted, getLastTruck, saveLastTruck 
 } from './services/db';
+import { subscribeToRouteCloud, isFirebaseConfigured } from './services/firebase';
 import { getCurrentUser, clearSession } from './services/auth';
 import { 
   DeliveryConditionFilter, shouldIncludeMemberByCondition,
@@ -28,6 +30,8 @@ export const App: React.FC = () => {
   const [stops, setStops] = useState<DeliveryStop[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [isFirebaseModalOpen, setIsFirebaseModalOpen] = useState<boolean>(false);
+  const [isCloudConnected, setIsCloudConnected] = useState<boolean>(isFirebaseConfigured());
 
   // Delivery condition filter (Default: only รอบปกติ!)
   const [conditionFilter, setConditionFilter] = useState<DeliveryConditionFilter>({
@@ -177,6 +181,21 @@ export const App: React.FC = () => {
     }
   }, [selectedTruck, selectedDay, members, isLoading, conditionFilter, selectedDate, loadStopsForRoute]);
 
+  // Real-time Cloud Route Listener (Syncs changes between Office & Driver immediately)
+  useEffect(() => {
+    if (!selectedTruck || !selectedDate || !isCloudConnected) return;
+
+    const unsub = subscribeToRouteCloud(selectedTruck, selectedDate, (cloudRoute) => {
+      if (cloudRoute && cloudRoute.stops) {
+        setStops(cloudRoute.stops);
+      }
+    });
+
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [selectedTruck, selectedDate, isCloudConnected]);
+
   // 4. Save Route to DB with Date Key
   const handleSaveRoute = async () => {
     if (!selectedTruck || stops.length === 0) return;
@@ -273,6 +292,8 @@ export const App: React.FC = () => {
         activeTrucksCount={availableTrucks.length}
         completedStopsCount={completedCount}
         totalStopsCount={stops.length}
+        isCloudConnected={isCloudConnected}
+        onOpenFirebaseModal={() => setIsFirebaseModalOpen(true)}
       />
 
       {/* Main Body */}
@@ -320,6 +341,14 @@ export const App: React.FC = () => {
       <footer className="border-t border-slate-200 bg-white py-3 text-center text-[11px] text-slate-400">
         AquaRoute • ระบบบริหารจัดการสายส่งน้ำดื่ม
       </footer>
+
+      {/* Firebase Cloud Config Modal */}
+      <FirebaseConfigModal
+        isOpen={isFirebaseModalOpen}
+        onClose={() => setIsFirebaseModalOpen(false)}
+        members={members}
+        onConfigUpdated={() => setIsCloudConnected(isFirebaseConfigured())}
+      />
 
     </div>
   );
