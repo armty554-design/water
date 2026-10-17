@@ -314,9 +314,14 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
   // Leaflet Map Rendering
   useEffect(() => {
-    if (activeTab !== 'map' || !mapContainerRef.current) return;
+    if (!mapContainerRef.current) return;
 
     if (!mapInstanceRef.current) {
+      // Prevent "Map container is already initialized" error
+      if ((mapContainerRef.current as any)._leaflet_id) {
+        (mapContainerRef.current as any)._leaflet_id = null;
+      }
+
       const map = L.map(mapContainerRef.current, {
         center: [13.7563, 100.5018],
         zoom: 11
@@ -334,6 +339,13 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     const map = mapInstanceRef.current;
     const markersLayer = markersLayerRef.current;
     if (!map || !markersLayer) return;
+
+    // Invalidate size on tab activation or resize
+    const timer = setTimeout(() => {
+      try {
+        map.invalidateSize();
+      } catch (e) {}
+    }, 100);
 
     markersLayer.clearLayers();
     clusterCirclesRef.current.forEach(c => c.remove());
@@ -373,16 +385,14 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         }
       });
     } 
-    // SCENARIO 2: Targeted mode preview -> Show selected donor trucks points & spatial pockets
+    // SCENARIO 2: Targeted mode with selected donor trucks
     else if (rebalanceMode === 'targeted' && selectedDonorTrucks.length > 0) {
-      // Collect all cluster member IDs across all selected trucks
       const allClusterMemberIds = new Set<string>();
       clustersByTruck.forEach(item => {
         const topCluster = item.clusters[0];
         if (topCluster) {
           topCluster.members.forEach(m => allClusterMemberIds.add(m.id));
 
-          // Draw circle boundary for this cluster
           if (topCluster.radiusKm > 0) {
             const circle = L.circle([topCluster.seedLat, topCluster.seedLng], {
               radius: topCluster.radiusKm * 1000,
@@ -429,10 +439,32 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         }
       });
     }
+    // SCENARIO 3: Default backdrop (render sample members so map is never empty)
+    else {
+      const sample = members.filter(m => m.hasGps && m.lat && m.lng).slice(0, 300);
+      sample.forEach(m => {
+        const marker = L.circleMarker([m.lat, m.lng], {
+          radius: 5,
+          fillColor: '#2563eb',
+          color: '#ffffff',
+          weight: 1,
+          opacity: 0.9,
+          fillOpacity: 0.7
+        });
+        marker.bindPopup(`<strong>${m.name}</strong> (${m.id})<br/>สาย: ${m.truckNo}`);
+        markersLayer.addLayer(marker);
+        bounds.extend([m.lat, m.lng]);
+        count++;
+      });
+    }
 
     if (count > 0 && bounds.isValid()) {
       map.fitBounds(bounds, { padding: [40, 40] });
     }
+
+    return () => {
+      clearTimeout(timer);
+    };
   }, [activeTab, simulationResult, rebalanceMode, selectedDonorTrucks, clustersByTruck, members]);
 
   // Current display stats
@@ -1057,33 +1089,31 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           </div>
         </div>
 
-        {/* Tab 1: Map View */}
-        {activeTab === 'map' && (
-          <div className="p-4">
-            <div className="mb-2 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 text-slate-600">
-              <div className="flex items-center gap-3">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-blue-500" />
-                  <span>สายเดิมที่เลือก ({selectedDonorTrucks.join(', ') || 'ไม่มี'})</span>
+        {/* Tab 1: Map View (Always retained in DOM to preserve Leaflet instance) */}
+        <div className={activeTab === 'map' ? 'p-4 block' : 'hidden'}>
+          <div className="mb-2 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 text-slate-600">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-blue-500" />
+                <span>สายเดิมที่เลือก ({selectedDonorTrucks.join(', ') || 'ไม่มี'})</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-200" />
+                <span className="font-bold text-purple-800">
+                  กลุ่มก้อนเชิงพื้นที่ที่จะตัดย้าย
                 </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-200" />
-                  <span className="font-bold text-purple-800">
-                    กลุ่มก้อนเชิงพื้นที่ที่จะตัดย้าย
-                  </span>
-                </span>
-              </div>
-              <span className="text-[11px] text-slate-400">
-                วงกลมประสีม่วงแสดงขอบเขตกลุ่มก้อนเชิงพื้นที่ (รัศมีเป็นกลุ่มก้อนชัดเจน)
               </span>
             </div>
-
-            <div 
-              ref={mapContainerRef} 
-              className="h-[520px] w-full rounded-lg border border-slate-200 overflow-hidden" 
-            />
+            <span className="text-[11px] text-slate-400">
+              วงกลมประสีม่วงแสดงขอบเขตกลุ่มก้อนเชิงพื้นที่ (รัศมีเป็นกลุ่มก้อนชัดเจน)
+            </span>
           </div>
-        )}
+
+          <div 
+            ref={mapContainerRef} 
+            className="h-[520px] w-full rounded-lg border border-slate-200 overflow-hidden relative z-0" 
+          />
+        </div>
 
         {/* Tab 2: Summary Table */}
         {activeTab === 'summary' && (
