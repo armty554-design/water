@@ -65,13 +65,32 @@ export interface RouteAssignment {
   updatedAt: string;
 }
 
+export interface SpatialClusterCandidate {
+  clusterId: string;
+  label: string;
+  seedMemberId: string;
+  seedLat: number;
+  seedLng: number;
+  radiusKm: number;
+  memberCount: number;
+  monthlyBottles: number;
+  dailyAvgBottles: number;
+  members: Member[];
+}
+
 export interface RebalanceConfig {
   workingDays: number; // default: 26 วัน
-  targetCapacityPerDay: number; // default: 220 or fleet average
-  targetPercentage: number; // default: 90%
+  targetCapacityPerDay: number; // default: 160 ถัง/วัน (100%)
+  targetPercentage: number; // default: 90% (144 ถัง/วัน)
+  donorTruck?: string; // specific truck to cut from
+  targetRecipientTruck?: string; // specific truck to receive
   selectedTrucks?: string[];
   lockedTrucks?: string[];
+  lockedMemberIds?: string[]; // specific members prohibited from moving
+  preserveDeliveryDays?: boolean; // do not change member delivery day (default: true)
+  excludeSpecialConditions?: boolean; // prevent members with special conditions/warnings from moving
   newTrucks: string[]; // e.g. ["13199"]
+  selectedClusterId?: string;
 }
 
 export interface TruckVolumeStats {
