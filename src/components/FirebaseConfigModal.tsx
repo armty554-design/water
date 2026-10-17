@@ -29,6 +29,7 @@ export const FirebaseConfigModal: React.FC<FirebaseConfigModalProps> = ({
 
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<string>('');
 
   if (!isOpen) return null;
 
@@ -125,15 +126,21 @@ export const FirebaseConfigModal: React.FC<FirebaseConfigModalProps> = ({
 
     setIsSyncing(true);
     setStatusMsg(null);
+    setSyncProgress('กำลังเตรียมข้อมูล...');
+
     try {
-      await saveMembersToCloud(members);
+      await saveMembersToCloud(members, (currentTrucks, totalTrucks) => {
+        setSyncProgress(`กำลังอัปโหลด... (${currentTrucks}/${totalTrucks} สายรถ)`);
+      });
       setStatusMsg({ 
         type: 'success', 
-        text: `อัปโหลดข้อมูลสมาชิก ${members.length.toLocaleString()} รายชื่อขึ้น Cloud Firestore เรียบร้อยแล้ว! มือถือคนขับสามารถดึงข้อมูลได้ทันที` 
+        text: `อัปโหลดข้อมูลสมาชิก ${members.length.toLocaleString()} รายชื่อขึ้น Cloud Firestore สำเร็จเรียบร้อยแล้ว!` 
       });
+      setSyncProgress('');
     } catch (err: any) {
       console.error(err);
       setStatusMsg({ type: 'error', text: `ซิงค์ไม่สำเร็จ: ${err.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อ'}` });
+      setSyncProgress('');
     } finally {
       setIsSyncing(false);
     }
@@ -271,7 +278,7 @@ export const FirebaseConfigModal: React.FC<FirebaseConfigModalProps> = ({
                 disabled={isSyncing}
                 className="py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-xs shadow-sm transition disabled:opacity-50"
               >
-                {isSyncing ? 'กำลังซิงค์...' : `อัปโหลดสมาชิกขึ้น Cloud (${members.length.toLocaleString()} ราย)`}
+                {isSyncing ? (syncProgress || 'กำลังซิงค์...') : `อัปโหลดสมาชิกขึ้น Cloud (${members.length.toLocaleString()} ราย)`}
               </button>
             )}
           </div>

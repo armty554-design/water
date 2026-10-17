@@ -116,21 +116,7 @@ export function sanitizeForFirestore<T>(data: T): T {
   if (data === null || data === undefined) {
     return null as any;
   }
-  if (Array.isArray(data)) {
-    return data
-      .filter(item => item !== undefined)
-      .map(item => sanitizeForFirestore(item)) as any;
-  }
-  if (typeof data === 'object') {
-    const cleanObj: Record<string, any> = {};
-    for (const [key, val] of Object.entries(data)) {
-      if (val !== undefined) {
-        cleanObj[key] = sanitizeForFirestore(val);
-      }
-    }
-    return cleanObj as any;
-  }
-  return data;
+  return JSON.parse(JSON.stringify(data));
 }
 
 // -------------------------------------------------------------
@@ -247,7 +233,10 @@ export async function markStopCompletedInCloud(
  * Partition and save members to Firestore by truck number.
  * This keeps document sizes small (~30KB per truck) and optimizes free tier reads.
  */
-export async function saveMembersToCloud(members: Member[]): Promise<boolean> {
+export async function saveMembersToCloud(
+  members: Member[],
+  onProgress?: (currentTrucks: number, totalTrucks: number) => void
+): Promise<boolean> {
   const db = getFirebaseDb();
   if (!db) return false;
 
@@ -261,7 +250,8 @@ export async function saveMembersToCloud(members: Member[]): Promise<boolean> {
   });
 
   const entries = Object.entries(truckGroups);
-  const CHUNK_SIZE = 200; // Firestore batch maximum is 500
+  const CHUNK_SIZE = 10; // Batch 10 trucks at a time for live progress and safety
+  let completedCount = 0;
 
   for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
     const chunk = entries.slice(i, i + CHUNK_SIZE);
@@ -279,6 +269,10 @@ export async function saveMembersToCloud(members: Member[]): Promise<boolean> {
     }
 
     await batch.commit();
+    completedCount += chunk.length;
+    if (onProgress) {
+      onProgress(completedCount, entries.length);
+    }
   }
 
   // Also save a lightweight metadata summary
