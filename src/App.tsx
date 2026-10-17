@@ -1,24 +1,26 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Member, DeliveryStop, DayOfWeek, UserRole } from './types/delivery';
+import { AuthUser } from './types/auth';
 import { Navbar } from './components/Navbar';
 import { OfficeView } from './components/OfficeView';
 import { DriverView } from './components/DriverView';
+import { LoginView } from './components/LoginView';
 import { 
   getMembers, saveMembers, getRoute, saveRoute, 
   markStopCompleted, getLastTruck, saveLastTruck 
 } from './services/db';
+import { getCurrentUser, clearSession } from './services/auth';
 import initialMembersData from './data/initialData.json';
 
-// Helper to get current Day of Week in Thai
 function getCurrentThaiDay(): DayOfWeek {
-  const dayIndex = new Date().getDay(); // 0 = Sunday, 1 = Monday...
+  const dayIndex = new Date().getDay();
   const days: DayOfWeek[] = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
   const day = days[dayIndex];
-  // Default to Monday if Sunday (as most deliveries run Mon-Sat)
   return day === 'อาทิตย์' ? 'จันทร์' : day;
 }
 
 export const App: React.FC = () => {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [currentRole, setCurrentRole] = useState<UserRole>('office');
   const [members, setMembers] = useState<Member[]>([]);
   const [selectedDay, setSelectedDay] = useState<DayOfWeek>(getCurrentThaiDay());
@@ -27,30 +29,39 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
-  // 1. Initial Load: Load from IndexedDB or seed initialData
+  // 1. Initial Load: Auth Session & Data
   useEffect(() => {
     async function initData() {
       setIsLoading(true);
       try {
+        // Check existing login session
+        const session = getCurrentUser();
+        if (session) {
+          setCurrentUser(session);
+          setCurrentRole(session.role);
+          if (session.role === 'driver' && session.assignedTruck) {
+            setSelectedTruck(session.assignedTruck);
+          }
+        }
+
         let loadedMembers = await getMembers();
         if (!loadedMembers || loadedMembers.length === 0) {
-          // Use bundled sample data
           loadedMembers = initialMembersData as Member[];
           await saveMembers(loadedMembers);
         }
         setMembers(loadedMembers);
 
-        // Load last truck
-        const lastTruck = await getLastTruck();
-        if (lastTruck) {
-          setSelectedTruck(lastTruck);
-        } else if (loadedMembers.length > 0) {
-          // Find first truck with stops on this day
-          const firstTruck = loadedMembers.find(m => m.deliveryDays.includes(selectedDay))?.truckNo || loadedMembers[0].truckNo;
-          setSelectedTruck(firstTruck);
+        if (!session || session.role !== 'driver') {
+          const lastTruck = await getLastTruck();
+          if (lastTruck) {
+            setSelectedTruck(lastTruck);
+          } else if (loadedMembers.length > 0) {
+            const firstTruck = loadedMembers.find(m => m.deliveryDays.includes(selectedDay))?.truckNo || loadedMembers[0].truckNo;
+            setSelectedTruck(firstTruck);
+          }
         }
       } catch (err) {
-        console.error('Failed to init members:', err);
+        console.error('Failed to init data:', err);
       } finally {
         setIsLoading(false);
       }
@@ -62,7 +73,6 @@ export const App: React.FC = () => {
   const availableTrucks = useMemo(() => {
     const truckCounts: Record<string, number> = {};
     members.forEach(m => {
-      // Check if member has delivery on selectedDay
       const deliversOnDay = m.deliveryDays.some(d => d.includes(selectedDay) || selectedDay.includes(d));
       if (deliversOnDay && m.truckNo) {
         truckCounts[m.truckNo] = (truckCounts[m.truckNo] || 0) + 1;
@@ -74,21 +84,22 @@ export const App: React.FC = () => {
     return list;
   }, [members, selectedDay]);
 
-  // If current selectedTruck is not in availableTrucks, switch to first available
   useEffect(() => {
+    if (currentUser?.role === 'driver' && currentUser.assignedTruck) {
+      setSelectedTruck(currentUser.assignedTruck);
+      return;
+    }
     if (availableTrucks.length > 0 && !availableTrucks.some(t => t.truckNo === selectedTruck)) {
       setSelectedTruck(availableTrucks[0].truckNo);
     }
-  }, [availableTrucks, selectedTruck]);
+  }, [availableTrucks, selectedTruck, currentUser]);
 
   // 3. Load or Build Stops for [selectedTruck, selectedDay]
   const loadStopsForRoute = useCallback(async (truck: string, day: DayOfWeek, currentMembers: Member[]) => {
     if (!truck) return;
 
-    // Check if there is an existing saved route in IndexedDB
     const savedRoute = await getRoute(truck, day);
     if (savedRoute && savedRoute.stops && savedRoute.stops.length > 0) {
-      // Merge with latest member details
       const memberMap = new Map(currentMembers.map(m => [m.id, m]));
       const refreshedStops = savedRoute.stops.map((stop, idx) => {
         const freshMember = memberMap.get(stop.member.id) || stop.member;
@@ -104,7 +115,6 @@ export const App: React.FC = () => {
       return;
     }
 
-    // Otherwise, generate fresh default stops
     const dayFilteredMembers = currentMembers.filter(m => {
       const matchTruck = m.truckNo === truck;
       const matchDay = m.deliveryDays.some(d => d.includes(day) || day.includes(d));
@@ -134,7 +144,7 @@ export const App: React.FC = () => {
     setIsSaving(true);
     try {
       await saveRoute(selectedTruck, selectedDay, stops);
-      alert('บันทึกลำดับสายส่งเรียบร้อยแล้ว! ฝั่งคนขับจะเห็นลำดับใหม่ทันที');
+      alert('บันทึกลำดับสายส่งเรียบร้อยแล้ว พนักงานส่งน้ำจะเห็นลำดับใหม่ทันที');
     } catch (err) {
       console.error(err);
       alert('บันทึกไม่สำเร็จ');
@@ -159,20 +169,44 @@ export const App: React.FC = () => {
     await markStopCompleted(selectedTruck, selectedDay, memberId, isCompleted);
   };
 
-  // 6. Manual Reset or Reload default dataset
   const handleLoadInitialData = async () => {
     const seed = initialMembersData as Member[];
     await saveMembers(seed);
     setMembers(seed);
   };
 
+  // Auth Handlers
+  const handleLoginSuccess = (user: AuthUser) => {
+    setCurrentUser(user);
+    setCurrentRole(user.role);
+    if (user.role === 'driver' && user.assignedTruck) {
+      setSelectedTruck(user.assignedTruck);
+    }
+  };
+
+  const handleLogout = () => {
+    clearSession();
+    setCurrentUser(null);
+  };
+
   const completedCount = stops.filter(s => s.isCompleted).length;
 
+  if (!currentUser) {
+    return (
+      <LoginView
+        onLoginSuccess={handleLoginSuccess}
+        availableTrucks={availableTrucks}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col selection:bg-brand-500 selection:text-white">
+    <div className="min-h-screen bg-slate-100 flex flex-col selection:bg-slate-900 selection:text-white">
       
       {/* Navigation Header */}
       <Navbar
+        currentUser={currentUser}
+        onLogout={handleLogout}
         currentRole={currentRole}
         onRoleChange={setCurrentRole}
         totalMembers={members.length}
@@ -181,12 +215,11 @@ export const App: React.FC = () => {
         totalStopsCount={stops.length}
       />
 
-      {/* Main App Body */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      {/* Main Body */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
         {isLoading ? (
-          <div className="h-96 flex flex-col items-center justify-center space-y-4">
-            <div className="w-12 h-12 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin"></div>
-            <p className="text-sm font-medium text-slate-500">กำลังเตรียมข้อมูลระบบจัดสายส่งน้ำ...</p>
+          <div className="h-80 flex flex-col items-center justify-center text-xs text-slate-500">
+            กำลังโหลดข้อมูลระบบ...
           </div>
         ) : currentRole === 'office' ? (
           <OfficeView
@@ -217,8 +250,8 @@ export const App: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-400">
-        ระบบจัดสายส่งน้ำดื่มสำหรับสมาชิก • AquaRoute Delivery System
+      <footer className="border-t border-slate-200 bg-white py-3 text-center text-[11px] text-slate-400">
+        AquaRoute • ระบบบริหารจัดการสายส่งน้ำดื่ม
       </footer>
 
     </div>
