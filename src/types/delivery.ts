@@ -1,6 +1,6 @@
 export type DayOfWeek = 'จันทร์' | 'อังคาร' | 'พุธ' | 'พฤหัสบดี' | 'ศุกร์' | 'เสาร์' | 'อาทิตย์';
 
-export type UserRole = 'office' | 'driver';
+export type UserRole = 'office' | 'driver' | 'rebalance';
 
 export interface DaySchedule {
   day: string;          // e.g. "จ.", "อ.", "พ."
@@ -64,3 +64,47 @@ export interface RouteAssignment {
   stops: DeliveryStop[];
   updatedAt: string;
 }
+
+export interface RebalanceConfig {
+  workingDays: number; // default: 26 วัน
+  targetCapacityPerDay: number; // default: 220 or fleet average
+  targetPercentage: number; // default: 90%
+  selectedTrucks?: string[];
+  lockedTrucks?: string[];
+  newTrucks: string[]; // e.g. ["13199"]
+}
+
+export interface TruckVolumeStats {
+  truckNo: string;
+  memberCount: number;
+  monthlyBottles: number;
+  dailyAvgBottles: number; // monthlyBottles / workingDays
+  targetDailyBottles: number; // targetCapacityPerDay * (targetPercentage / 100)
+  utilizationRate: number; // dailyAvgBottles / targetCapacityPerDay
+  status: 'optimal' | 'overload' | 'underload';
+  isNew?: boolean;
+}
+
+export interface ReassignedMember {
+  memberId: string;
+  memberName: string;
+  oldTruck: string;
+  newTruck: string;
+  monthlyBottles: number;
+  deliveryDays: string[];
+  address?: string;
+  lat: number;
+  lng: number;
+  hasGps: boolean;
+  distanceKm?: number;
+}
+
+export interface RebalanceResult {
+  statsBefore: TruckVolumeStats[];
+  statsAfter: TruckVolumeStats[];
+  reassignedMembers: ReassignedMember[];
+  workingDays: number;
+  targetDailyBottles: number;
+  updatedMembers: Member[];
+}
+

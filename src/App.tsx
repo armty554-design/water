@@ -4,6 +4,7 @@ import { AuthUser } from './types/auth';
 import { Navbar } from './components/Navbar';
 import { OfficeView } from './components/OfficeView';
 import { DriverView } from './components/DriverView';
+import { RebalanceView } from './components/RebalanceView';
 import { LoginView } from './components/LoginView';
 import { FirebaseConfigModal } from './components/FirebaseConfigModal';
 import { 
@@ -321,6 +322,11 @@ export const App: React.FC = () => {
             onLoadInitialData={handleLoadInitialData}
             conditionFilter={conditionFilter}
             onConditionFilterChange={setConditionFilter}
+          />
+        ) : currentRole === 'rebalance' ? (
+          <RebalanceView
+            members={members}
+            onMembersUpdated={setMembers}
           />
         ) : (
           <DriverView
