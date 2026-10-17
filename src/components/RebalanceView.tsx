@@ -37,6 +37,8 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
   // Multi-Truck Donor Selection (เลือกตัดเบอร์ได้มากกว่า 1 คัน)
   const [selectedDonorTrucks, setSelectedDonorTrucks] = useState<string[]>(['13201', '13205']);
+  const [donorSearchQuery, setDonorSearchQuery] = useState<string>('');
+  const [donorFilterTab, setDonorFilterTab] = useState<'all' | 'overload' | 'selected' | 'underload'>('all');
   const [targetRecipientTruck, setTargetRecipientTruck] = useState<string>('');
   const [selectedClusterId, setSelectedClusterId] = useState<string>('');
 
@@ -105,6 +107,34 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   }, [selectedDonorsStats, dailyTarget90]);
 
   const totalExcessMonthly = Math.round(totalExcessDaily * workingDays);
+
+  const overloadTrucksCount = useMemo(() => {
+    return baselineStats.filter(t => t.status === 'overload').length;
+  }, [baselineStats]);
+
+  const underloadTrucksCount = useMemo(() => {
+    return baselineStats.filter(t => t.status !== 'overload').length;
+  }, [baselineStats]);
+
+  // Filtered donor list based on search and tab filter
+  const filteredDonorList = useMemo(() => {
+    let list = [...baselineStats];
+
+    if (donorFilterTab === 'overload') {
+      list = list.filter(t => t.status === 'overload');
+    } else if (donorFilterTab === 'selected') {
+      list = list.filter(t => selectedDonorTrucks.includes(t.truckNo));
+    } else if (donorFilterTab === 'underload') {
+      list = list.filter(t => t.status !== 'overload');
+    }
+
+    if (donorSearchQuery.trim()) {
+      const q = donorSearchQuery.trim().toLowerCase();
+      list = list.filter(t => t.truckNo.toLowerCase().includes(q));
+    }
+
+    return list;
+  }, [baselineStats, donorFilterTab, donorSearchQuery, selectedDonorTrucks]);
 
   // Spatial cluster pockets for selected donor trucks
   const clustersByTruck = useMemo(() => {
@@ -587,58 +617,171 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               </div>
             </div>
 
-            {/* Scrollable Checkbox List of All Trucks */}
-            <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-50">
-              {baselineStats.map(t => {
-                const isSelected = selectedDonorTrucks.includes(t.truckNo);
-                const isOver = t.status === 'overload';
-                const excess = Math.max(0, Math.round((t.dailyAvgBottles - dailyTarget90) * 10) / 10);
-
-                return (
-                  <label
-                    key={t.truckNo}
-                    className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition text-xs ${
-                      isSelected
-                        ? 'bg-blue-50/80 border border-blue-300'
-                        : 'hover:bg-slate-50 border border-transparent'
-                    }`}
+            {/* Search Input Bar & Filter Tabs */}
+            <div className="space-y-2 pt-1">
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="🔍 พิมพ์ค้นหาเบอร์รถ เช่น 13201, 131, 502..."
+                  value={donorSearchQuery}
+                  onChange={e => setDonorSearchQuery(e.target.value)}
+                  className="w-full pl-3 pr-8 py-2 border border-slate-300 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50/70 font-medium"
+                />
+                {donorSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setDonorSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full hover:bg-slate-200"
+                    title="ล้างคำค้นหา"
                   >
-                    <div className="flex items-center gap-2.5">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => handleToggleDonorTruck(t.truckNo)}
-                        className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
-                      />
-                      <div>
-                        <span className="font-bold text-slate-800 text-sm">
-                          สาย {t.truckNo}
-                        </span>
-                        <span className="text-[11px] text-slate-500 ml-2">
-                          ({t.memberCount} จุด &bull; {t.monthlyBottles.toLocaleString()} ถัง/ด.)
-                        </span>
-                      </div>
-                    </div>
+                    ✕
+                  </button>
+                )}
+              </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="text-right">
-                        <span className="font-bold text-slate-800">{t.dailyAvgBottles}</span>
-                        <span className="text-[10px] text-slate-400 ml-0.5">ถัง/วัน</span>
+              {/* Quick Filter Tabs */}
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setDonorFilterTab('all')}
+                  className={`px-2.5 py-1 rounded-full font-semibold transition ${
+                    donorFilterTab === 'all'
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  ทั้งหมด ({baselineStats.length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDonorFilterTab('overload')}
+                  className={`px-2.5 py-1 rounded-full font-semibold transition flex items-center gap-1 ${
+                    donorFilterTab === 'overload'
+                      ? 'bg-rose-600 text-white shadow-xs'
+                      : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+                  }`}
+                >
+                  <span>🔥 เกิน 90%</span>
+                  <span>({overloadTrucksCount})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDonorFilterTab('selected')}
+                  className={`px-2.5 py-1 rounded-full font-semibold transition ${
+                    donorFilterTab === 'selected'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
+                  }`}
+                >
+                  ✓ ที่เลือก ({selectedDonorTrucks.length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDonorFilterTab('underload')}
+                  className={`px-2.5 py-1 rounded-full font-semibold transition ${
+                    donorFilterTab === 'underload'
+                      ? 'bg-slate-700 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  ปกติ/ต่ำกว่าเป้า ({underloadTrucksCount})
+                </button>
+              </div>
+            </div>
+
+            {/* Selected Trucks Badges / Chips */}
+            {selectedDonorTrucks.length > 0 && (
+              <div className="p-2.5 bg-blue-50/70 rounded-lg border border-blue-200 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-blue-800 font-bold mr-1">
+                  เลือกตัด {selectedDonorTrucks.length} คัน:
+                </span>
+                {selectedDonorTrucks.map(tNo => (
+                  <span
+                    key={tNo}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-600 text-white rounded text-[11px] font-bold shadow-2xs"
+                  >
+                    <span>{tNo}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleDonorTruck(tNo)}
+                      className="hover:text-rose-200 text-white/80 font-bold ml-0.5 leading-none"
+                      title="ยกเลิกการเลือกสายนี้"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Scrollable Checkbox List of Filtered Trucks */}
+            <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-50 border border-slate-100 rounded-lg p-1.5">
+              {filteredDonorList.length === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-400">
+                  ไม่พบเบอร์สายรถที่ตรงกับ "{donorSearchQuery}"
+                  <button
+                    type="button"
+                    onClick={() => { setDonorSearchQuery(''); setDonorFilterTab('all'); }}
+                    className="block mx-auto mt-1.5 text-blue-600 font-medium underline"
+                  >
+                    แสดงสายรถทั้งหมด
+                  </button>
+                </div>
+              ) : (
+                filteredDonorList.map(t => {
+                  const isSelected = selectedDonorTrucks.includes(t.truckNo);
+                  const isOver = t.status === 'overload';
+                  const excess = Math.max(0, Math.round((t.dailyAvgBottles - dailyTarget90) * 10) / 10);
+
+                  return (
+                    <label
+                      key={t.truckNo}
+                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition text-xs ${
+                        isSelected
+                          ? 'bg-blue-50/80 border border-blue-300'
+                          : 'hover:bg-slate-50 border border-transparent'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleDonorTruck(t.truckNo)}
+                          className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                        />
+                        <div>
+                          <span className="font-bold text-slate-800 text-sm">
+                            สาย {t.truckNo}
+                          </span>
+                          <span className="text-[11px] text-slate-500 ml-2">
+                            ({t.memberCount} จุด &bull; {t.monthlyBottles.toLocaleString()} ถัง/ด.)
+                          </span>
+                        </div>
                       </div>
 
-                      {isOver ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
-                          เกิน +{excess} ถัง
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200">
-                          ปกติ
-                        </span>
-                      )}
-                    </div>
-                  </label>
-                );
-              })}
+                      <div className="flex items-center gap-3">
+                        <div className="text-right">
+                          <span className="font-bold text-slate-800">{t.dailyAvgBottles}</span>
+                          <span className="text-[10px] text-slate-400 ml-0.5">ถัง/วัน</span>
+                        </div>
+
+                        {isOver ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
+                            เกิน +{excess} ถัง
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200">
+                            ปกติ
+                          </span>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })
+              )}
             </div>
 
             {/* Selected Donors Summary Banner */}
