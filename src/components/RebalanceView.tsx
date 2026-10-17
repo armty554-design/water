@@ -26,16 +26,17 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   members,
   onMembersUpdated
 }) => {
-  // Rebalancing mode: 'targeted' (เลือกตัดเฉพาะสาย) vs 'fleet' (เกลี่ยทั้งกองรถ)
+  // Mode: 'targeted' (เลือกตัดเฉพาะสาย - รองรับหลายคันพร้อมกัน) vs 'fleet' (เกลี่ยทั้งกองรถ)
   const [rebalanceMode, setRebalanceMode] = useState<'targeted' | 'fleet'>('targeted');
 
-  // Core Capacity Parameters (160 bottles = 100%, 90% = 144 bottles/day)
-  const [workingDays, setWorkingDays] = useState<number>(26);
-  const [targetCapacityPerDay, setTargetCapacityPerDay] = useState<number>(160); // 100% capacity
-  const [targetPercentage, setTargetPercentage] = useState<number>(90); // 90% target
+  // Core Capacity Parameters
+  // 160 * 26 = 4,160 คือ 100%, 90% = 144 * 26 = 3,744
+  const [workingDays, setWorkingDays] = useState<number>(26); // กำหนดวันทำงานต่อเดือนได้อิสระ
+  const targetCapacityPerDay = 160; // 160 ถัง/วัน คือ 100%
+  const targetPercentage = 90; // 90%
 
-  // Targeted Cut States
-  const [donorTruck, setDonorTruck] = useState<string>('13201');
+  // Multi-Truck Donor Selection (เลือกตัดเบอร์ได้มากกว่า 1 คัน)
+  const [selectedDonorTrucks, setSelectedDonorTrucks] = useState<string[]>(['13201', '13205']);
   const [targetRecipientTruck, setTargetRecipientTruck] = useState<string>('');
   const [selectedClusterId, setSelectedClusterId] = useState<string>('');
 
@@ -57,7 +58,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const [applySuccessMsg, setApplySuccessMsg] = useState<string | null>(null);
 
   // View tabs
-  const [activeTab, setActiveTab] = useState<'summary' | 'reassigned' | 'map'>('map');
+  const [activeTab, setActiveTab] = useState<'map' | 'summary' | 'reassigned'>('map');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterTruck, setFilterTruck] = useState<string>('ALL');
 
@@ -65,7 +66,13 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
-  const clusterCircleRef = useRef<L.Circle | null>(null);
+  const clusterCirclesRef = useRef<L.Circle[]>([]);
+
+  // Calculated Capacity Targets based on Working Days (160 * workingDays = 100%)
+  const dailyTarget100 = 160; // 160 ถัง/วัน
+  const dailyTarget90 = Math.round(160 * (targetPercentage / 100)); // 144 ถัง/วัน
+  const monthlyTarget100 = dailyTarget100 * workingDays; // e.g. 160 * 26 = 4,160 ถัง/เดือน
+  const monthlyTarget90 = Math.round(dailyTarget90 * workingDays); // e.g. 144 * 26 = 3,744 ถัง/เดือน
 
   // 1. Baseline Truck Statistics
   const baselineStats = useMemo(() => {
@@ -78,14 +85,6 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     );
   }, [members, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
 
-  // Set default donor truck to the most overloaded truck if not set
-  useEffect(() => {
-    if (baselineStats.length > 0 && !baselineStats.some(t => t.truckNo === donorTruck)) {
-      const topOverloaded = baselineStats.find(t => t.status === 'overload') || baselineStats[0];
-      setDonorTruck(topOverloaded.truckNo);
-    }
-  }, [baselineStats, donorTruck]);
-
   // Set default recipient to new truck or underloaded truck
   useEffect(() => {
     if (newTrucks.length > 0 && !targetRecipientTruck) {
@@ -93,35 +92,41 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     }
   }, [newTrucks, targetRecipientTruck]);
 
-  // Selected Donor Truck Volume Data
-  const donorStat = useMemo(() => {
-    return baselineStats.find(s => s.truckNo === donorTruck);
-  }, [baselineStats, donorTruck]);
+  // Aggregate Excess across all selected donor trucks
+  const selectedDonorsStats = useMemo(() => {
+    return baselineStats.filter(t => selectedDonorTrucks.includes(t.truckNo));
+  }, [baselineStats, selectedDonorTrucks]);
 
-  const targetDailyGoal = Math.round(targetCapacityPerDay * (targetPercentage / 100)); // 144 ถัง/วัน
-  const excessDailyBottles = donorStat ? Math.max(0, Math.round((donorStat.dailyAvgBottles - targetDailyGoal) * 10) / 10) : 0;
+  const totalExcessDaily = useMemo(() => {
+    return selectedDonorsStats.reduce((sum, t) => {
+      const excess = Math.max(0, t.dailyAvgBottles - dailyTarget90);
+      return sum + excess;
+    }, 0);
+  }, [selectedDonorsStats, dailyTarget90]);
 
-  // Spatial cluster pockets for selected donor truck
-  const clusterCandidates = useMemo(() => {
-    if (!donorTruck || rebalanceMode !== 'targeted') return [];
-    return findSpatialClustersForTruck(
-      members,
-      donorTruck,
-      excessDailyBottles > 0 ? excessDailyBottles : 30,
-      workingDays,
-      { lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays }
-    );
-  }, [members, donorTruck, excessDailyBottles, workingDays, lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays, rebalanceMode]);
+  const totalExcessMonthly = Math.round(totalExcessDaily * workingDays);
 
-  useEffect(() => {
-    if (clusterCandidates.length > 0 && (!selectedClusterId || !clusterCandidates.some(c => c.clusterId === selectedClusterId))) {
-      setSelectedClusterId(clusterCandidates[0].clusterId);
-    }
-  }, [clusterCandidates, selectedClusterId]);
-
-  const activeCluster = useMemo(() => {
-    return clusterCandidates.find(c => c.clusterId === selectedClusterId) || clusterCandidates[0] || null;
-  }, [clusterCandidates, selectedClusterId]);
+  // Spatial cluster pockets for selected donor trucks
+  const clustersByTruck = useMemo(() => {
+    if (rebalanceMode !== 'targeted' || selectedDonorTrucks.length === 0) return [];
+    
+    const allClusters: { truckNo: string; clusters: SpatialClusterCandidate[] }[] = [];
+    selectedDonorTrucks.forEach(tNo => {
+      const stat = baselineStats.find(s => s.truckNo === tNo);
+      const excess = stat ? Math.max(10, stat.dailyAvgBottles - dailyTarget90) : 30;
+      const clusters = findSpatialClustersForTruck(
+        members,
+        tNo,
+        excess,
+        workingDays,
+        { lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays }
+      );
+      if (clusters.length > 0) {
+        allClusters.push({ truckNo: tNo, clusters });
+      }
+    });
+    return allClusters;
+  }, [members, selectedDonorTrucks, dailyTarget90, workingDays, lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays, rebalanceMode, baselineStats]);
 
   // Add new truck
   const handleAddNewTruck = (e?: React.FormEvent) => {
@@ -148,14 +153,37 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     if (simulationResult) setSimulationResult(null);
   };
 
-  const handleToggleLockMember = (memberId: string) => {
-    setLockedMemberIds(prev => 
-      prev.includes(memberId) ? prev.filter(id => id !== memberId) : [...prev, memberId]
-    );
+  // Toggle donor truck selection (multi-select)
+  const handleToggleDonorTruck = (truckNo: string) => {
+    setSelectedDonorTrucks(prev => {
+      if (prev.includes(truckNo)) {
+        return prev.filter(t => t !== truckNo);
+      } else {
+        return [...prev, truckNo];
+      }
+    });
+    setSimulationResult(null);
+  };
+
+  // Quick select all overloaded trucks
+  const handleSelectAllOverloaded = () => {
+    const overloaded = baselineStats.filter(t => t.status === 'overload').map(t => t.truckNo);
+    setSelectedDonorTrucks(overloaded);
+    setSimulationResult(null);
+  };
+
+  const handleClearSelectedDonors = () => {
+    setSelectedDonorTrucks([]);
+    setSimulationResult(null);
   };
 
   // Run Rebalance Simulation
   const handleRunSimulation = () => {
+    if (rebalanceMode === 'targeted' && selectedDonorTrucks.length === 0) {
+      alert('กรุณาเลือกสายรถที่จะตัดยอดอย่างน้อย 1 คัน');
+      return;
+    }
+
     setIsSimulating(true);
     setApplySuccessMsg(null);
 
@@ -165,9 +193,10 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           workingDays,
           targetCapacityPerDay,
           targetPercentage,
-          donorTruck: rebalanceMode === 'targeted' ? donorTruck : undefined,
+          donorTrucks: rebalanceMode === 'targeted' ? selectedDonorTrucks : undefined,
           targetRecipientTruck: rebalanceMode === 'targeted' ? targetRecipientTruck : undefined,
-          selectedClusterId: rebalanceMode === 'targeted' ? selectedClusterId : undefined,
+          targetRecipientTrucks: newTrucks,
+          selectedClusterId: (selectedDonorTrucks.length === 1 && selectedClusterId) ? selectedClusterId : undefined,
           lockedTrucks,
           lockedMemberIds,
           preserveDeliveryDays,
@@ -175,7 +204,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           newTrucks
         });
         setSimulationResult(result);
-        setActiveTab('map'); // Switch to map to view the resulting cluster
+        setActiveTab('map');
       } catch (err) {
         console.error('Rebalance simulation error:', err);
         alert('เกิดข้อผิดพลาดในการคำนวณเกลี่ยสาย');
@@ -194,7 +223,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const handleApplyRebalance = async () => {
     if (!simulationResult) return;
     const reassignedCount = simulationResult.reassignedMembers.length;
-    if (!window.confirm(`ยืนยันการนำสายส่งใหม่ไปใช้จริง? จะมีการปรับสายรถของสมาชิกจำนวน ${reassignedCount.toLocaleString()} รายการ (โดยรอบส่งวันเดิมยังคงเดิม 100%)`)) {
+    if (!window.confirm(`ยืนยันการนำสายส่งใหม่ไปใช้จริง? จะมีการปรับสายรถของสมาชิกจำนวน ${reassignedCount.toLocaleString()} รายการ (โดยรอบส่งวันเดิมคงเดิม 100%)`)) {
       return;
     }
 
@@ -209,11 +238,11 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       if (isFirebaseConfigured()) {
         setApplyProgress('กำลังซิงค์ข้อมูลสายส่งใหม่ขึ้น Cloud Firestore...');
         await saveMembersToCloud(updatedMembers, (done, total) => {
-          setApplyProgress(`กำลังซิงค์ขึ้น Cloud: สายรถกลุ่มที่ ${done}/${total}...`);
+          setApplyProgress(`กำลังซิงค์ขึ้น Cloud: กลุ่มสายรถที่ ${done}/${total}...`);
         });
       }
 
-      setApplySuccessMsg(`จัดตัดสายใหม่สำเร็จ! สมาชิกจำนวน ${reassignedCount.toLocaleString()} รายการ ได้ถูกโอนย้ายไปยังสาย ${targetRecipientTruck || 'ใหม่'} เรียบร้อยแล้ว`);
+      setApplySuccessMsg(`จัดตัดสายใหม่สำเร็จ! สมาชิกจำนวน ${reassignedCount.toLocaleString()} รายการ ได้รับการโอนย้ายเรียบร้อยแล้ว`);
       setSimulationResult(null);
     } catch (err) {
       console.error('Failed to apply rebalance:', err);
@@ -248,10 +277,8 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     if (!map || !markersLayer) return;
 
     markersLayer.clearLayers();
-    if (clusterCircleRef.current) {
-      clusterCircleRef.current.remove();
-      clusterCircleRef.current = null;
-    }
+    clusterCirclesRef.current.forEach(c => c.remove());
+    clusterCirclesRef.current = [];
 
     const bounds = L.latLngBounds([]);
     let count = 0;
@@ -276,7 +303,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
               <span style="color: #dc2626;">สายเดิม: ${m.oldTruck}</span> &rarr; 
               <strong style="color: #16a34a;">สายใหม่: ${m.newTruck}</strong><br/>
-              <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
+              <span>รอบส่ง (คงเดิม 100%): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
               <span>ยอดส่ง: <strong>${m.monthlyBottles}</strong> ถัง/เดือน</span>
             </div>
           `);
@@ -287,17 +314,39 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         }
       });
     } 
-    // SCENARIO 2: Targeted mode preview -> Show donor truck points and highlight active spatial pocket cluster
-    else if (rebalanceMode === 'targeted' && donorTruck) {
-      const donorMembers = members.filter(m => m.truckNo.trim() === donorTruck.trim());
-      const clusterMemberIds = new Set(activeCluster ? activeCluster.members.map(m => m.id) : []);
+    // SCENARIO 2: Targeted mode preview -> Show selected donor trucks points & spatial pockets
+    else if (rebalanceMode === 'targeted' && selectedDonorTrucks.length > 0) {
+      // Collect all cluster member IDs across all selected trucks
+      const allClusterMemberIds = new Set<string>();
+      clustersByTruck.forEach(item => {
+        const topCluster = item.clusters[0];
+        if (topCluster) {
+          topCluster.members.forEach(m => allClusterMemberIds.add(m.id));
+
+          // Draw circle boundary for this cluster
+          if (topCluster.radiusKm > 0) {
+            const circle = L.circle([topCluster.seedLat, topCluster.seedLng], {
+              radius: topCluster.radiusKm * 1000,
+              color: '#9333ea',
+              weight: 2,
+              dashArray: '5, 5',
+              fillColor: '#9333ea',
+              fillOpacity: 0.12
+            });
+            circle.addTo(map);
+            clusterCirclesRef.current.push(circle);
+          }
+        }
+      });
+
+      const donorMembers = members.filter(m => selectedDonorTrucks.includes(m.truckNo.trim()));
 
       donorMembers.forEach(m => {
         if (m.hasGps && m.lat && m.lng) {
-          const inCluster = clusterMemberIds.has(m.id);
+          const inCluster = allClusterMemberIds.has(m.id);
           const marker = L.circleMarker([m.lat, m.lng], {
             radius: inCluster ? 7 : 4.5,
-            fillColor: inCluster ? '#9333ea' : '#3b82f6', // Purple for pocket, Blue for rest of donor truck
+            fillColor: inCluster ? '#9333ea' : '#3b82f6',
             color: '#ffffff',
             weight: inCluster ? 2 : 1,
             opacity: 1,
@@ -310,8 +359,8 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               <span style="color: #64748b;">${m.address || '-'}</span><br/>
               <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
               <span>สายรถ: <strong>${m.truckNo}</strong></span><br/>
-              <span>รอบส่ง: <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
-              <span>สถานะกลุ่มก้อน: <strong style="color: ${inCluster ? '#9333ea' : '#3b82f6'};">${inCluster ? 'อยู่ในกลุ่มก้อนที่จะตัด' : 'คงอยู่ในสายเดิม'}</strong></span>
+              <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
+              <span>สถานะ: <strong style="color: ${inCluster ? '#9333ea' : '#3b82f6'};">${inCluster ? 'อยู่ในกลุ่มก้อนที่จะตัดย้าย' : 'คงอยู่ในสายเดิม'}</strong></span>
             </div>
           `);
 
@@ -320,26 +369,12 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           count++;
         }
       });
-
-      // Draw cluster circle visual boundary
-      if (activeCluster && activeCluster.radiusKm > 0) {
-        const circle = L.circle([activeCluster.seedLat, activeCluster.seedLng], {
-          radius: activeCluster.radiusKm * 1000,
-          color: '#9333ea',
-          weight: 2,
-          dashArray: '5, 5',
-          fillColor: '#9333ea',
-          fillOpacity: 0.1
-        });
-        circle.addTo(map);
-        clusterCircleRef.current = circle;
-      }
     }
 
     if (count > 0 && bounds.isValid()) {
       map.fitBounds(bounds, { padding: [40, 40] });
     }
-  }, [activeTab, simulationResult, rebalanceMode, donorTruck, activeCluster, members]);
+  }, [activeTab, simulationResult, rebalanceMode, selectedDonorTrucks, clustersByTruck, members]);
 
   // Current display stats
   const currentDisplayStats = simulationResult ? simulationResult.statsAfter : baselineStats;
@@ -347,29 +382,23 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     return new Map<string, TruckVolumeStats>(baselineStats.map(s => [s.truckNo, s]));
   }, [baselineStats]);
 
-  // Filtered members in donor truck
-  const donorMemberList = useMemo(() => {
-    if (!donorTruck) return [];
-    return members.filter(m => m.truckNo.trim() === donorTruck.trim());
-  }, [members, donorTruck]);
-
   return (
     <div className="space-y-5">
       
-      {/* Top Banner */}
+      {/* Top Banner with Exact Calculation Formula */}
       <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
         <div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-              จัดตัดเกลี่ยสายส่งน้ำดื่ม (Route Rebalancing)
+              ระบบจัดตัดเกลี่ยสายส่งน้ำดื่ม (Route Rebalancing)
             </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-              ฐาน 160 ถัง/วัน (100%) &bull; เป้าหมาย 90% ({targetDailyGoal} ถัง/วัน)
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+              เกณฑ์ 160 ถัง/วัน &bull; เป้าหมาย 90%
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            เลือกตัดสายรายคันเป็นกลุ่มก้อนเชิงพื้นที่บนแผนที่ (Spatial Pocket Clustering) 
-            พร้อมเงื่อนไขพิเศษ <strong className="text-slate-700">คงรอบส่งวันเดิมของสมาชิก 100%</strong>
+            ตัดยอดสายรถล้นเป็นกลุ่มก้อนเชิงพื้นที่บนแผนที่ (Spatial Pocket Cluster) พร้อมเงื่อนไข 
+            <strong className="text-slate-700 ml-1">สมาชิกไม่เปลี่ยนวันส่ง 100%</strong>
           </p>
         </div>
 
@@ -405,7 +434,11 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 กำลังคำนวณกลุ่มก้อน...
               </span>
             ) : (
-              <span>{rebalanceMode === 'targeted' ? `จำลองตัดสาย ${donorTruck} (${targetDailyGoal} ถัง)` : 'คำนวณเกลี่ยทั้งกองรถ'}</span>
+              <span>
+                {rebalanceMode === 'targeted' 
+                  ? `จำลองตัดสาย (${selectedDonorTrucks.length} คันที่เลือก)` 
+                  : 'คำนวณเกลี่ยทั้งกองรถ'}
+              </span>
             )}
           </button>
 
@@ -417,6 +450,53 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               รีเซ็ต
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Formula & Working Days Bar (160 * workingDays = 100%, 90% = 144 * workingDays) */}
+      <div className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white p-4 rounded-xl shadow-xs">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wider font-semibold text-blue-200">
+                สูตรคำนวณเกณฑ์กำลังส่งต่อเดือน
+              </span>
+              <span className="text-[10px] bg-blue-800/80 text-blue-200 px-2 py-0.5 rounded-full border border-blue-700">
+                {workingDays} วันทำงาน
+              </span>
+            </div>
+            <div className="text-sm sm:text-base font-bold flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="text-emerald-300">
+                100% ความจุ = 160 × {workingDays} = <strong>{monthlyTarget100.toLocaleString()}</strong> ถัง/เดือน
+              </span>
+              <span className="text-blue-300">|</span>
+              <span className="text-amber-300">
+                90% เป้าหมาย = 144 × {workingDays} = <strong>{monthlyTarget90.toLocaleString()}</strong> ถัง/เดือน
+              </span>
+            </div>
+          </div>
+
+          {/* Working Days Input Control (ให้กำหนดวันทำงานได้อิสระ) */}
+          <div className="flex items-center gap-2 bg-blue-950/70 p-2 rounded-lg border border-blue-700/60">
+            <label className="text-xs text-blue-200 whitespace-nowrap">
+              กำหนดวันทำงาน:
+            </label>
+            <input
+              type="number"
+              min={15}
+              max={31}
+              value={workingDays}
+              onChange={e => {
+                const val = Math.max(1, parseInt(e.target.value, 10) || 26);
+                setWorkingDays(val);
+                setSimulationResult(null);
+              }}
+              className="w-16 px-2 py-1 bg-blue-900 border border-blue-600 rounded text-center text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+            <span className="text-xs text-blue-300">วัน/เดือน</span>
+          </div>
+
         </div>
       </div>
 
@@ -454,7 +534,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <span>🎯 โหมด 1: เลือกตัดเฉพาะสาย (Targeted Cluster Cut)</span>
+            <span>🎯 โหมด 1: เลือกตัดสายรายคัน (เลือกได้มากกว่า 1 คัน)</span>
           </button>
 
           <button
@@ -465,67 +545,127 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <span>⚖️ โหมด 2: เกลี่ยทั้งกองรถให้ได้ 90% (Fleet Rebalance)</span>
+            <span>⚖️ โหมด 2: เกลี่ยทั้งกองรถให้อยู่ในเกณฑ์ 90%</span>
           </button>
-        </div>
-
-        <div className="hidden sm:flex items-center gap-4 text-xs text-slate-500 pr-3">
-          <span>ความจุมาตรฐาน 100%: <strong>160 ถัง/วัน</strong></span>
-          <span>&bull;</span>
-          <span>เป้าหมายเกลี่ย 90%: <strong>144 ถัง/วัน</strong></span>
         </div>
       </div>
 
-      {/* Targeted Cut Configuration Panel */}
+      {/* Multi-Truck Targeted Cut Panel */}
       {rebalanceMode === 'targeted' ? (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           
-          {/* Card 1: Donor Truck Selection */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              1. เลือกเบอร์สายรถที่จะตัดยอด (Donor Truck)
-            </label>
-            <select
-              value={donorTruck}
-              onChange={e => {
-                setDonorTruck(e.target.value);
-                setSimulationResult(null);
-              }}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-800 font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {baselineStats.map(t => (
-                <option key={t.truckNo} value={t.truckNo}>
-                  สาย {t.truckNo} — ยอดส่ง {t.dailyAvgBottles} ถัง/วัน ({t.utilizationRate}%) {t.status === 'overload' ? '🔥 งานล้น' : ''}
-                </option>
-              ))}
-            </select>
+          {/* Column 1: Multi-Truck Donor Selector (7 Cols) */}
+          <div className="lg:col-span-7 bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+              <div>
+                <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <span>1. เลือกเบอร์สายรถที่จะตัดยอด</span>
+                  <span className="text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                    เลือกแล้ว {selectedDonorTrucks.length} คัน
+                  </span>
+                </label>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  สามารถติ๊กเลือกได้หลายคันพร้อมกันเพื่อตัดกลุ่มก้อนที่มียอดเกิน 90% ({dailyTarget90} ถัง/วัน)
+                </p>
+              </div>
 
-            {donorStat && (
-              <div className="mt-3 p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">ยอดส่งเฉลี่ยปัจจุบัน:</span>
-                  <strong className="text-slate-800">{donorStat.dailyAvgBottles} ถัง/วัน</strong>
+              <div className="flex items-center gap-1.5 text-xs">
+                <button
+                  type="button"
+                  onClick={handleSelectAllOverloaded}
+                  className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-[11px] font-semibold transition"
+                >
+                  + เลือกทุกสายที่เกิน 90%
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearSelectedDonors}
+                  className="px-2 py-1 text-slate-500 hover:text-slate-800 rounded text-[11px] transition"
+                >
+                  ล้าง
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable Checkbox List of All Trucks */}
+            <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-50">
+              {baselineStats.map(t => {
+                const isSelected = selectedDonorTrucks.includes(t.truckNo);
+                const isOver = t.status === 'overload';
+                const excess = Math.max(0, Math.round((t.dailyAvgBottles - dailyTarget90) * 10) / 10);
+
+                return (
+                  <label
+                    key={t.truckNo}
+                    className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition text-xs ${
+                      isSelected
+                        ? 'bg-blue-50/80 border border-blue-300'
+                        : 'hover:bg-slate-50 border border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleDonorTruck(t.truckNo)}
+                        className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                      />
+                      <div>
+                        <span className="font-bold text-slate-800 text-sm">
+                          สาย {t.truckNo}
+                        </span>
+                        <span className="text-[11px] text-slate-500 ml-2">
+                          ({t.memberCount} จุด &bull; {t.monthlyBottles.toLocaleString()} ถัง/ด.)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <span className="font-bold text-slate-800">{t.dailyAvgBottles}</span>
+                        <span className="text-[10px] text-slate-400 ml-0.5">ถัง/วัน</span>
+                      </div>
+
+                      {isOver ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
+                          เกิน +{excess} ถัง
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200">
+                          ปกติ
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+
+            {/* Selected Donors Summary Banner */}
+            {selectedDonorTrucks.length > 0 && (
+              <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="text-slate-500">สายที่เลือกตัด: </span>
+                  <strong className="text-slate-800">{selectedDonorTrucks.join(', ')}</strong>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">เป้าหมาย 90%:</span>
-                  <strong className="text-blue-600">{targetDailyGoal} ถัง/วัน</strong>
-                </div>
-                <div className="flex justify-between border-t border-slate-200 pt-1">
-                  <span className="text-slate-600 font-medium">ยอดถังส่วนเกินที่ต้องตัด:</span>
+                <div>
+                  <span className="text-slate-600">ยอดส่วนเกินที่จะตัดออกรวม: </span>
                   <strong className="text-rose-600 font-bold">
-                    {excessDailyBottles > 0 ? `+${excessDailyBottles} ถัง/วัน (~${Math.round(excessDailyBottles * workingDays)} ถัง/เดือน)` : '0 ถัง (ไม่เกินเป้า)'}
+                    +{totalExcessDaily} ถัง/วัน ({totalExcessMonthly.toLocaleString()} ถัง/เดือน)
                   </strong>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Card 2: Recipient Truck Selection */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              2. โอนเข้าสายรถปลายทาง (Recipient Truck)
-            </label>
-            <div className="flex gap-2 mb-2">
+          {/* Column 2: Recipient Truck & Clusters (5 Cols) */}
+          <div className="lg:col-span-5 space-y-4">
+            
+            {/* Recipient Truck */}
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <label className="block text-xs font-bold text-slate-800 mb-1.5">
+                2. สายรถปลายทางที่จะรับโอน (Recipient Truck)
+              </label>
               <select
                 value={targetRecipientTruck}
                 onChange={e => setTargetRecipientTruck(e.target.value)}
@@ -536,119 +676,102 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                     <option key={t} value={t}>สายใหม่: {t}</option>
                   ))}
                 </optgroup>
-                <optgroup label="สายรถเดิมข้างเคียง">
-                  {baselineStats.filter(t => t.truckNo !== donorTruck).map(t => (
+                <optgroup label="สายรถเดิม">
+                  {baselineStats.filter(t => !selectedDonorTrucks.includes(t.truckNo)).map(t => (
                     <option key={t.truckNo} value={t.truckNo}>
                       สายเดิม: {t.truckNo} (ปัจจุบัน {t.dailyAvgBottles} ถัง/วัน)
                     </option>
                   ))}
                 </optgroup>
               </select>
+
+              {/* Add New Truck Form */}
+              <form onSubmit={handleAddNewTruck} className="flex gap-1.5 mt-2.5">
+                <input
+                  type="text"
+                  placeholder="เพิ่มสายใหม่ เช่น 13200"
+                  value={newTruckInput}
+                  onChange={e => setNewTruckInput(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold whitespace-nowrap transition"
+                >
+                  + เพิ่มสายใหม่
+                </button>
+              </form>
+
+              {newTrucks.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {newTrucks.map(t => (
+                    <span key={t} className="px-2 py-0.5 rounded text-[11px] bg-purple-100 text-purple-800 font-semibold border border-purple-200 flex items-center gap-1">
+                      <span>{t}</span>
+                      <button onClick={() => handleRemoveNewTruck(t)} className="text-purple-600 hover:text-red-600 font-bold">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {/* Quick Add New Truck form */}
-            <form onSubmit={handleAddNewTruck} className="flex gap-1.5 mt-2">
-              <input
-                type="text"
-                placeholder="เพิ่มเบอร์สายใหม่ เช่น 13199"
-                value={newTruckInput}
-                onChange={e => setNewTruckInput(e.target.value)}
-                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <button
-                type="submit"
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold whitespace-nowrap transition"
-              >
-                + เพิ่ม
-              </button>
-            </form>
-          </div>
+            {/* Clusters Summary */}
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold text-slate-800">
+                  3. กลุ่มก้อนเชิงพื้นที่ที่จะถูกตัดย้าย
+                </label>
+                <span className="text-[10px] text-purple-700 font-semibold bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                  กลุ่มก้อนบนแผนที่
+                </span>
+              </div>
 
-          {/* Card 3: Spatial Cluster Pocket Selector */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-bold text-slate-700">
-                3. เลือกกลุ่มก้อนเชิงพื้นที่บนแผนที่ (Spatial Pocket)
-              </label>
-              <span className="text-[10px] text-purple-700 font-semibold bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                เป็นกลุ่มก้อน 100%
-              </span>
+              {clustersByTruck.length === 0 ? (
+                <div className="text-xs text-slate-400 py-3 text-center">
+                  เลือกสายรถด้านซ้ายเพื่อวิเคราะห์กลุ่มก้อน
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                  {clustersByTruck.map(item => {
+                    const topCluster = item.clusters[0];
+                    return (
+                      <div key={item.truckNo} className="p-2 bg-purple-50/60 rounded-lg border border-purple-200 text-xs">
+                        <div className="flex justify-between font-bold text-slate-800">
+                          <span>สาย {item.truckNo}</span>
+                          <span className="text-purple-700">{topCluster.memberCount} จุดส่ง</span>
+                        </div>
+                        <div className="flex justify-between text-[11px] text-slate-500 mt-0.5">
+                          <span>รัศมีก้อน: ~{topCluster.radiusKm} กม.</span>
+                          <span>ยอดตัด: ~{topCluster.dailyAvgBottles} ถัง/วัน</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
-            {clusterCandidates.length === 0 ? (
-              <div className="text-xs text-slate-400 py-3 text-center">
-                ไม่พบกลุ่มก้อนที่ตรงเงื่อนไข หรือสายนี้ไม่มีสมาชิกล้น
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {clusterCandidates.map((c, idx) => (
-                  <button
-                    key={c.clusterId}
-                    type="button"
-                    onClick={() => setSelectedClusterId(c.clusterId)}
-                    className={`w-full text-left p-2.5 rounded-lg border text-xs transition ${
-                      selectedClusterId === c.clusterId
-                        ? 'bg-purple-50 border-purple-400 ring-1 ring-purple-400'
-                        : 'bg-white border-slate-200 hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-800">
-                        {c.label}
-                      </span>
-                      <span className="font-mono font-bold text-purple-700">
-                        {c.memberCount} จุด
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5 flex items-center justify-between">
-                      <span>รัศมีก้อน: ~{c.radiusKm} กม.</span>
-                      <span>ตัดยอด: ~{c.dailyAvgBottles} ถัง/วัน</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
         </div>
       ) : (
-        /* Fleet Wide Controls */
+        /* Fleet Mode Controls */
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
             <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              ความจุมาตรฐานต่อคัน (ถัง/วัน)
+              ความจุมาตรฐานต่อคัน
             </label>
-            <input
-              type="number"
-              value={targetCapacityPerDay}
-              onChange={e => setTargetCapacityPerDay(parseInt(e.target.value, 10) || 160)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <span className="text-[11px] text-slate-400 mt-1 block">
-              1 วันรถวิ่ง = 160 ถัง (100% capacity)
-            </span>
+            <div className="text-sm font-bold text-slate-800 p-2 bg-slate-50 rounded border border-slate-200">
+              160 ถัง/วัน ({monthlyTarget100.toLocaleString()} ถัง/เดือน)
+            </div>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
             <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              เป้าหมายตัดเกลี่ย (%)
+              เป้าหมายตัดเกลี่ย (90%)
             </label>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={70}
-                max={100}
-                value={targetPercentage}
-                onChange={e => setTargetPercentage(parseInt(e.target.value, 10))}
-                className="w-full accent-blue-600 cursor-pointer"
-              />
-              <span className="text-sm font-bold text-blue-700 w-12 text-right">
-                {targetPercentage}%
-              </span>
+            <div className="text-sm font-bold text-blue-700 p-2 bg-blue-50 rounded border border-blue-200">
+              144 ถัง/วัน ({monthlyTarget90.toLocaleString()} ถัง/เดือน)
             </div>
-            <span className="text-[11px] text-slate-400 mt-1 block">
-              เป้าหมายที่แท้จริง = {targetDailyGoal} ถัง/วัน
-            </span>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
@@ -663,30 +786,19 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 onChange={e => setNewTruckInput(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-800"
               />
-              <button
-                type="submit"
-                className="px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold"
-              >
+              <button type="submit" className="px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold">
                 + เพิ่ม
               </button>
             </form>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {newTrucks.map(t => (
-                <span key={t} className="px-2 py-0.5 rounded text-[11px] bg-purple-100 text-purple-800 font-semibold border border-purple-200 flex items-center gap-1">
-                  <span>{t}</span>
-                  <button onClick={() => handleRemoveNewTruck(t)} className="text-purple-600 hover:text-red-600 font-bold">×</button>
-                </span>
-              ))}
-            </div>
           </div>
         </div>
       )}
 
-      {/* Special Conditions Bar */}
+      {/* Special Constraints Bar (สมาชิกไม่เปลี่ยนวัน / ห้ามย้ายรอบ) */}
       <div className="bg-amber-50/60 border border-amber-200/80 p-3.5 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-2 text-amber-900 font-semibold">
           <span className="text-base">🛡️</span>
-          <span>เงื่อนไขพิเศษการตัดสาย (Special Constraints):</span>
+          <span>เงื่อนไขพิเศษการตัดสาย:</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-4 text-slate-700">
@@ -716,7 +828,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         </div>
       </div>
 
-      {/* Main Tabs Navigation */}
+      {/* Tabs & Visualizations */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         
         <div className="p-3 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
@@ -727,12 +839,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 activeTab === 'map' ? 'bg-white text-blue-700 shadow-xs border border-slate-200' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <span>🗺️ แผนที่แสดงกลุ่มก้อน</span>
-              {activeCluster && (
-                <span className="px-1.5 py-0.2 bg-purple-100 text-purple-700 text-[10px] rounded-full">
-                  รัศมี {activeCluster.radiusKm} กม.
-                </span>
-              )}
+              <span>🗺️ แผนที่กลุ่มก้อนที่เลือกตัด</span>
             </button>
 
             <button
@@ -741,7 +848,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 activeTab === 'summary' ? 'bg-white text-blue-700 shadow-xs border border-slate-200' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              ตารางเปรียบเทียบสายรถ ({currentDisplayStats.length})
+              ตารางเปรียบเทียบทุกสายรถ ({currentDisplayStats.length})
             </button>
 
             <button
@@ -760,29 +867,29 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 ✓ จำลองตัดสายแล้ว ({simulationResult.reassignedMembers.length} จุดส่ง)
               </span>
             ) : (
-              <span>กดปุ่ม <strong>"จำลองตัดสาย"</strong> ด้านบนเพื่อดูผลลัพธ์</span>
+              <span>กดปุ่ม <strong>"จำลองตัดสาย"</strong> ด้านบนเพื่อประมวลผล</span>
             )}
           </div>
         </div>
 
-        {/* Tab Content: Map View */}
+        {/* Tab 1: Map View */}
         {activeTab === 'map' && (
           <div className="p-4">
             <div className="mb-2 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 text-slate-600">
               <div className="flex items-center gap-3">
                 <span className="inline-flex items-center gap-1.5">
                   <span className="w-3 h-3 rounded-full bg-blue-500" />
-                  <span>สายเดิม ({donorTruck})</span>
+                  <span>สายเดิมที่เลือก ({selectedDonorTrucks.join(', ') || 'ไม่มี'})</span>
                 </span>
                 <span className="inline-flex items-center gap-1.5">
                   <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-200" />
                   <span className="font-bold text-purple-800">
-                    กลุ่มก้อนที่จะตัดย้าย ({activeCluster ? `${activeCluster.memberCount} จุด` : '0 จุด'})
+                    กลุ่มก้อนเชิงพื้นที่ที่จะตัดย้าย
                   </span>
                 </span>
               </div>
               <span className="text-[11px] text-slate-400">
-                จุดหมุดสีม่วงคือสมาชิกที่จะถูกตัดย้ายเป็นกลุ่มก้อนเดียวเชิงพื้นที่
+                วงกลมประสีม่วงแสดงขอบเขตกลุ่มก้อนเชิงพื้นที่ (รัศมีเป็นกลุ่มก้อนชัดเจน)
               </span>
             </div>
 
@@ -793,7 +900,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           </div>
         )}
 
-        {/* Tab Content: Summary Table */}
+        {/* Tab 2: Summary Table */}
         {activeTab === 'summary' && (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
@@ -804,7 +911,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                   <th className="py-2.5 px-3 text-right">ยอดถังต่อเดือน</th>
                   <th className="py-2.5 px-3 text-right">ยอดส่งเฉลี่ยต่อวัน</th>
                   <th className="py-2.5 px-3 text-center">สัดส่วนต่อความจุ (ฐาน 160 ถัง)</th>
-                  <th className="py-2.5 px-3 text-center">สถานะเป้าหมาย 90% ({targetDailyGoal} ถัง)</th>
+                  <th className="py-2.5 px-3 text-center">สถานะเป้าหมาย 90% ({dailyTarget90} ถัง)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -820,6 +927,11 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                         {truck.isNew && (
                           <span className="ml-1.5 px-1.5 py-0.2 bg-purple-100 text-purple-700 text-[10px] rounded font-medium">
                             สายใหม่
+                          </span>
+                        )}
+                        {selectedDonorTrucks.includes(truck.truckNo) && (
+                          <span className="ml-1.5 px-1.5 py-0.2 bg-blue-100 text-blue-700 text-[10px] rounded font-medium">
+                            สายที่เลือกตัด
                           </span>
                         )}
                       </td>
@@ -884,14 +996,14 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           </div>
         )}
 
-        {/* Tab Content: Reassigned Members */}
+        {/* Tab 3: Reassigned Members */}
         {activeTab === 'reassigned' && (
           <div className="overflow-x-auto">
             {!simulationResult || simulationResult.reassignedMembers.length === 0 ? (
               <div className="py-16 text-center text-xs text-slate-500">
                 ยังไม่มีรายการจุดส่งที่ถูกตัดย้าย
                 <div className="mt-2">
-                  กดปุ่ม <strong>"จำลองตัดสาย"</strong> ด้านบนเพื่อเริ่มวิเคราะห์
+                  เลือกสายรถที่ต้องการตัดด้านบน แล้วกด <strong>"จำลองตัดสาย"</strong>
                 </div>
               </div>
             ) : (

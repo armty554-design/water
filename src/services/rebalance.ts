@@ -324,72 +324,95 @@ export function runRebalanceSimulation(
   const reassignedMembers: ReassignedMember[] = [];
   const lockedMemberSet = new Set(lockedMemberIds);
 
-  // --- MODE A: TARGETED SINGLE-TRUCK CLUSTER CUT ---
-  if (donorTruck && donorTruck.trim()) {
-    const cleanDonor = donorTruck.trim();
-    const donorStat = statsBefore.find(s => s.truckNo === cleanDonor);
+  const selectedDonors = (config.donorTrucks && config.donorTrucks.length > 0)
+    ? config.donorTrucks.map(t => t.trim()).filter(Boolean)
+    : (donorTruck && donorTruck.trim() ? [donorTruck.trim()] : []);
 
-    // Calculate how many bottles to cut to bring donor truck down to 90% (or targetDailyBottles)
-    const currentDaily = donorStat ? donorStat.dailyAvgBottles : targetDailyBottles;
-    const excessDaily = Math.max(10, currentDaily - targetDailyBottles);
+  // --- MODE A: TARGETED CLUSTER CUT FOR ONE OR MORE SELECTED TRUCKS ---
+  if (selectedDonors.length > 0) {
+    // Determine list of recipient trucks
+    const recipientsList: string[] = [];
+    if (config.targetRecipientTrucks && config.targetRecipientTrucks.length > 0) {
+      recipientsList.push(...config.targetRecipientTrucks.map(t => t.trim()).filter(Boolean));
+    }
+    if (targetRecipientTruck && targetRecipientTruck.trim() && !recipientsList.includes(targetRecipientTruck.trim())) {
+      recipientsList.push(targetRecipientTruck.trim());
+    }
+    if (newTrucks && newTrucks.length > 0) {
+      newTrucks.forEach(nt => {
+        const clean = nt.trim();
+        if (clean && !recipientsList.includes(clean)) recipientsList.push(clean);
+      });
+    }
+    if (recipientsList.length === 0) {
+      // Fallback: pick underloaded trucks
+      const under = statsBefore.filter(s => !selectedDonors.includes(s.truckNo) && s.dailyAvgBottles < targetDailyBottles);
+      if (under.length > 0) recipientsList.push(under[0].truckNo);
+      else recipientsList.push('13199');
+    }
 
-    // Pick target recipient: either specified recipient, or first new truck, or an underloaded truck
-    let recipientTruck = (targetRecipientTruck || '').trim();
-    if (!recipientTruck) {
-      if (newTrucks.length > 0) {
-        recipientTruck = newTrucks[0];
-      } else {
-        // Find underloaded truck
-        const under = statsBefore.filter(s => s.truckNo !== cleanDonor && s.dailyAvgBottles < targetDailyBottles);
-        recipientTruck = under.length > 0 ? under[under.length - 1].truckNo : (newTrucks[0] || '13NEW01');
+    let recipientIndex = 0;
+
+    for (const cleanDonor of selectedDonors) {
+      const donorStat = statsBefore.find(s => s.truckNo === cleanDonor);
+      const currentDaily = donorStat ? donorStat.dailyAvgBottles : targetDailyBottles;
+      const excessDaily = Math.max(10, currentDaily - targetDailyBottles);
+
+      // Find spatial clusters in donor truck
+      const clusters = findSpatialClustersForTruck(
+        workingMembers,
+        cleanDonor,
+        excessDaily,
+        workingDays,
+        { lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays }
+      );
+
+      // If single truck and specific cluster selected, use that; otherwise take best cluster
+      let chosenCluster = (selectedDonors.length === 1 && selectedClusterId)
+        ? (clusters.find(c => c.clusterId === selectedClusterId) || clusters[0])
+        : clusters[0];
+
+      if (chosenCluster && chosenCluster.members.length > 0) {
+        const movedIds = new Set(chosenCluster.members.map(m => m.id));
+        const currentRecipient = recipientsList[recipientIndex % recipientsList.length];
+
+        workingMembers.forEach(m => {
+          if (m.truckNo.trim() === cleanDonor && movedIds.has(m.id)) {
+            const oldTruck = m.truckNo;
+            m.truckNo = currentRecipient;
+
+            // Preserve member's delivery days unchanged!
+            const monthlyBottles = calculateMemberMonthlyBottles(m);
+            reassignedMembers.push({
+              memberId: m.id,
+              memberName: m.name,
+              oldTruck,
+              newTruck: currentRecipient,
+              monthlyBottles,
+              deliveryDays: m.deliveryDays || [],
+              address: m.address,
+              lat: m.lat,
+              lng: m.lng,
+              hasGps: m.hasGps,
+              distanceKm: calculateDistanceKm(chosenCluster.seedLat, chosenCluster.seedLng, m.lat, m.lng)
+            });
+          }
+        });
+
+        // Rotate to next recipient if multiple available and cluster was transferred
+        if (recipientsList.length > 1) {
+          recipientIndex++;
+        }
       }
     }
 
-    // Find spatial clusters in donor truck
-    const clusters = findSpatialClustersForTruck(
-      workingMembers,
-      cleanDonor,
-      excessDaily,
-      workingDays,
-      { lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays }
-    );
-
-    let chosenCluster = clusters.find(c => c.clusterId === selectedClusterId) || clusters[0];
-
-    if (chosenCluster && chosenCluster.members.length > 0) {
-      const movedIds = new Set(chosenCluster.members.map(m => m.id));
-
-      workingMembers.forEach(m => {
-        if (m.truckNo.trim() === cleanDonor && movedIds.has(m.id)) {
-          const oldTruck = m.truckNo;
-          m.truckNo = recipientTruck;
-
-          // Preserve member's delivery days unchanged!
-          // (preserveDeliveryDays ensures round remains identical)
-          const monthlyBottles = calculateMemberMonthlyBottles(m);
-          reassignedMembers.push({
-            memberId: m.id,
-            memberName: m.name,
-            oldTruck,
-            newTruck: recipientTruck,
-            monthlyBottles,
-            deliveryDays: m.deliveryDays || [],
-            address: m.address,
-            lat: m.lat,
-            lng: m.lng,
-            hasGps: m.hasGps,
-            distanceKm: calculateDistanceKm(chosenCluster.seedLat, chosenCluster.seedLng, m.lat, m.lng)
-          });
-        }
-      });
-    }
-
+    const allInvolvedNewTrucks = Array.from(new Set([...newTrucks, ...recipientsList]));
     const statsAfter = calculateTruckVolumeStats(
       workingMembers,
       workingDays,
       targetCapacityPerDay,
       targetPercentage,
-      newTrucks.includes(recipientTruck) ? newTrucks : [...newTrucks, recipientTruck]
+      allInvolvedNewTrucks
     );
 
     return {
@@ -564,7 +587,14 @@ export function exportRebalanceToExcel(result: RebalanceResult, filename = 'ร�
   const wb = XLSX.utils.book_new();
 
   // Sheet 1: Truck Workload Comparison (Before vs After)
+  const monthly100 = 160 * result.workingDays;
+  const monthly90 = Math.round(160 * 0.9 * result.workingDays);
+  const daily90 = Math.round(160 * 0.9);
+
   const truckRows: any[] = [
+    ['เกณฑ์ความจุ 100%:', `160 ถัง/วัน × ${result.workingDays} วันทำงาน = ${monthly100.toLocaleString()} ถัง/เดือน`],
+    ['เกณฑ์เป้าหมาย 90%:', `${daily90} ถัง/วัน × ${result.workingDays} วันทำงาน = ${monthly90.toLocaleString()} ถัง/เดือน`],
+    [],
     [
       'เบอร์รถ',
       'สถานะสาย',
@@ -575,7 +605,7 @@ export function exportRebalanceToExcel(result: RebalanceResult, filename = 'ร�
       'ยอดถังใหม่ (ถัง/เดือน)',
       'ยอดส่งเฉลี่ยต่อวันเดิม (ถัง/วัน)',
       'ยอดส่งเฉลี่ยต่อวันใหม่ (ถัง/วัน)',
-      'เป้าหมาย 90% (ถัง/วัน)',
+      `เป้าหมาย 90% (${daily90} ถัง/วัน)`,
       '% โหลดต่อความจุ (ฐาน 160 ถัง)',
       'สถานะเป้าหมาย'
     ]

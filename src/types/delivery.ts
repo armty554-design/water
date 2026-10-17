@@ -80,16 +80,18 @@ export interface SpatialClusterCandidate {
 
 export interface RebalanceConfig {
   workingDays: number; // default: 26 วัน
-  targetCapacityPerDay: number; // default: 160 ถัง/วัน (100%)
-  targetPercentage: number; // default: 90% (144 ถัง/วัน)
-  donorTruck?: string; // specific truck to cut from
+  targetCapacityPerDay: number; // default: 160 ถัง/วัน (100% capacity => 160 * workingDays = 4,160)
+  targetPercentage: number; // default: 90% (144 ถัง/วัน => 144 * workingDays = 3,744)
+  donorTruck?: string; // single donor truck (backwards compatible)
+  donorTrucks?: string[]; // multiple selected donor trucks to cut from
   targetRecipientTruck?: string; // specific truck to receive
+  targetRecipientTrucks?: string[]; // multiple recipient trucks to distribute to
   selectedTrucks?: string[];
   lockedTrucks?: string[];
   lockedMemberIds?: string[]; // specific members prohibited from moving
   preserveDeliveryDays?: boolean; // do not change member delivery day (default: true)
   excludeSpecialConditions?: boolean; // prevent members with special conditions/warnings from moving
-  newTrucks: string[]; // e.g. ["13199"]
+  newTrucks: string[]; // e.g. ["13199", "13200"]
   selectedClusterId?: string;
 }
 
