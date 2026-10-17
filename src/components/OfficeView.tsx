@@ -1,6 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { Member, DeliveryStop, DayOfWeek } from '../types/delivery';
-import { DeliveryConditionFilter } from '../services/weekHelper';
+import { 
+  DeliveryConditionFilter, formatDateThai, getTodayDateKey, 
+  getRelativeDateKey, getWeekOfMonth 
+} from '../services/weekHelper';
 import { syncMembersWithDiff, SyncDiffReport } from '../services/memberSync';
 import { MapView } from './MapView';
 import { MemberModal } from './MemberModal';
@@ -19,6 +22,9 @@ interface OfficeViewProps {
   onTruckChange: (truck: string) => void;
   selectedDay: DayOfWeek;
   onDayChange: (day: DayOfWeek) => void;
+  selectedDate: string;
+  onDateChange: (date: string) => void;
+  onCopyPreviousWeek?: () => Promise<void>;
   availableTrucks: { truckNo: string; count: number }[];
   onSaveRoute: () => Promise<void>;
   isSaving: boolean;
@@ -38,6 +44,9 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
   onTruckChange,
   selectedDay,
   onDayChange,
+  selectedDate,
+  onDateChange,
+  onCopyPreviousWeek,
   availableTrucks,
   onSaveRoute,
   isSaving,
@@ -163,27 +172,74 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
       {/* Top Filter & Operations Panel */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
         
-        {/* Row 1: Day selection & File actions */}
+        {/* Row 1: Advance Planning Date Selector & File actions */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-1">
-              รอบวันส่ง:
-            </span>
-            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
-              {DAYS_LIST.map((day) => (
-                <button
-                  key={day}
-                  onClick={() => onDayChange(day)}
-                  className={`px-3 py-1 rounded text-xs font-medium transition ${
-                    selectedDay === day
-                      ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {day}
-                </button>
-              ))}
+          <div className="flex items-center gap-3 flex-wrap">
+            
+            {/* Advance Planning Date Picker */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-slate-700 whitespace-nowrap">
+                วันที่จัดส่งล่วงหน้า:
+              </span>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => onDateChange(e.target.value)}
+                className="text-xs px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer"
+              />
             </div>
+
+            {/* Quick jump pills */}
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                onClick={() => onDateChange(getTodayDateKey())}
+                className={`px-2 py-1 rounded transition ${
+                  selectedDate === getTodayDateKey() ? 'bg-white font-bold text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                วันนี้
+              </button>
+              <button
+                onClick={() => onDateChange(getRelativeDateKey(1))}
+                className={`px-2 py-1 rounded transition ${
+                  selectedDate === getRelativeDateKey(1) ? 'bg-white font-bold text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                พรุ่งนี้
+              </button>
+              <button
+                onClick={() => onDateChange(getRelativeDateKey(2))}
+                className={`px-2 py-1 rounded transition ${
+                  selectedDate === getRelativeDateKey(2) ? 'bg-white font-bold text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                +2 วัน
+              </button>
+              <button
+                onClick={() => onDateChange(getRelativeDateKey(7))}
+                className={`px-2 py-1 rounded transition ${
+                  selectedDate === getRelativeDateKey(7) ? 'bg-white font-bold text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                สัปดาห์หน้า
+              </button>
+            </div>
+
+            {/* Formatted Date & Week Badge */}
+            <div className="text-xs font-medium text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200">
+              {formatDateThai(selectedDate)} (สัปดาห์ที่ {getWeekOfMonth(new Date(selectedDate))} ของเดือน)
+            </div>
+
+            {onCopyPreviousWeek && (
+              <button
+                onClick={onCopyPreviousWeek}
+                title="คัดลอกลำดับสายส่งของ 7 วันที่แล้วมาเป็นร่างล่วงหน้า"
+                className="text-xs px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg transition"
+              >
+                คัดลอกแผนจากสัปดาห์ก่อน
+              </button>
+            )}
+
           </div>
 
           <div className="flex items-center gap-2">

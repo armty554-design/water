@@ -10,21 +10,20 @@ import {
   markStopCompleted, getLastTruck, saveLastTruck 
 } from './services/db';
 import { getCurrentUser, clearSession } from './services/auth';
-import { DeliveryConditionFilter, shouldIncludeMemberByCondition } from './services/weekHelper';
+import { 
+  DeliveryConditionFilter, shouldIncludeMemberByCondition,
+  getTodayDateKey, getDayOfWeekFromDate, formatDateThai 
+} from './services/weekHelper';
 import initialMembersData from './data/initialData.json';
-
-function getCurrentThaiDay(): DayOfWeek {
-  const dayIndex = new Date().getDay();
-  const days: DayOfWeek[] = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
-  const day = days[dayIndex];
-  return day === 'อาทิตย์' ? 'จันทร์' : day;
-}
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [currentRole, setCurrentRole] = useState<UserRole>('office');
   const [members, setMembers] = useState<Member[]>([]);
-  const [selectedDay, setSelectedDay] = useState<DayOfWeek>(getCurrentThaiDay());
+  
+  // Advance Planning Date state (Default: Today's date YYYY-MM-DD)
+  const [selectedDate, setSelectedDate] = useState<string>(getTodayDateKey());
+  const [selectedDay, setSelectedDay] = useState<DayOfWeek>(getDayOfWeekFromDate(getTodayDateKey()));
   const [selectedTruck, setSelectedTruck] = useState<string>('13106');
   const [stops, setStops] = useState<DeliveryStop[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -37,6 +36,13 @@ export const App: React.FC = () => {
     includeOnDemand: false,
     selectedMonthlyWeek: null
   });
+
+  // Date Change Handler (Syncs day of week automatically)
+  const handleDateChange = (dateKey: string) => {
+    setSelectedDate(dateKey);
+    const newDay = getDayOfWeekFromDate(dateKey);
+    setSelectedDay(newDay);
+  };
 
   // 1. Initial Load: Auth Session & Data
   useEffect(() => {
@@ -103,16 +109,18 @@ export const App: React.FC = () => {
     }
   }, [availableTrucks, selectedTruck, currentUser]);
 
-  // 3. Load or Build Stops for [selectedTruck, selectedDay, conditionFilter]
+  // 3. Load or Build Stops for [selectedTruck, selectedDay, selectedDate, conditionFilter]
   const loadStopsForRoute = useCallback(async (
     truck: string, 
     day: DayOfWeek, 
     currentMembers: Member[],
-    filter: DeliveryConditionFilter
+    filter: DeliveryConditionFilter,
+    dateKey: string
   ) => {
     if (!truck) return;
 
-    const savedRoute = await getRoute(truck, day);
+    // Check if there is an existing saved route for this specific date
+    const savedRoute = await getRoute(truck, day, dateKey);
     if (savedRoute && savedRoute.stops && savedRoute.stops.length > 0) {
       const memberMap = new Map(currentMembers.map(m => [m.id, m]));
       const refreshedStops = savedRoute.stops.map((stop, idx) => {
@@ -149,18 +157,18 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (!isLoading && selectedTruck) {
-      loadStopsForRoute(selectedTruck, selectedDay, members, conditionFilter);
+      loadStopsForRoute(selectedTruck, selectedDay, members, conditionFilter, selectedDate);
       saveLastTruck(selectedTruck);
     }
-  }, [selectedTruck, selectedDay, members, isLoading, conditionFilter, loadStopsForRoute]);
+  }, [selectedTruck, selectedDay, members, isLoading, conditionFilter, selectedDate, loadStopsForRoute]);
 
-  // 4. Save Route to DB
+  // 4. Save Route to DB with Date Key
   const handleSaveRoute = async () => {
     if (!selectedTruck || stops.length === 0) return;
     setIsSaving(true);
     try {
-      await saveRoute(selectedTruck, selectedDay, stops);
-      alert('บันทึกลำดับสายส่งเรียบร้อยแล้ว พนักงานส่งน้ำจะเห็นลำดับใหม่ทันที');
+      await saveRoute(selectedTruck, selectedDay, stops, selectedDate);
+      alert(`บันทึกลำดับสายส่งวันที่ ${formatDateThai(selectedDate)} เรียบร้อยแล้ว!`);
     } catch (err) {
       console.error(err);
       alert('บันทึกไม่สำเร็จ');
@@ -169,7 +177,29 @@ export const App: React.FC = () => {
     }
   };
 
-  // 5. Driver Mark Complete
+  // 5. Clone / Copy route from 7 days ago
+  const handleCopyPreviousWeek = async () => {
+    const [year, month, day] = selectedDate.split('-').map(Number);
+    const d = new Date(year, month - 1, day);
+    d.setDate(d.getDate() - 7);
+    const prevDateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    
+    const prevRoute = await getRoute(selectedTruck, selectedDay, prevDateKey);
+    if (prevRoute && prevRoute.stops.length > 0) {
+      const clonedStops = prevRoute.stops.map((s, idx) => ({
+        ...s,
+        sequence: idx + 1,
+        isCompleted: false,
+        completedAt: undefined
+      }));
+      setStops(clonedStops);
+      alert(`คัดลอกลำดับสายส่งจากสัปดาห์ก่อนหน้า (${formatDateThai(prevDateKey)}) จำนวน ${clonedStops.length} จุด เรียบร้อยแล้ว`);
+    } else {
+      alert(`ไม่พบลำดับสายส่งที่บันทึกไว้ในสัปดาห์ก่อนหน้า (${formatDateThai(prevDateKey)})`);
+    }
+  };
+
+  // 6. Driver Mark Complete
   const handleMarkComplete = async (memberId: string, isCompleted: boolean) => {
     const updated = stops.map(s => {
       if (s.member.id === memberId) {
@@ -182,7 +212,7 @@ export const App: React.FC = () => {
       return s;
     });
     setStops(updated);
-    await markStopCompleted(selectedTruck, selectedDay, memberId, isCompleted);
+    await markStopCompleted(selectedTruck, selectedDay, memberId, isCompleted, selectedDate);
   };
 
   const handleLoadInitialData = async () => {
@@ -246,6 +276,9 @@ export const App: React.FC = () => {
             onTruckChange={setSelectedTruck}
             selectedDay={selectedDay}
             onDayChange={setSelectedDay}
+            selectedDate={selectedDate}
+            onDateChange={handleDateChange}
+            onCopyPreviousWeek={handleCopyPreviousWeek}
             availableTrucks={availableTrucks}
             onSaveRoute={handleSaveRoute}
             isSaving={isSaving}
@@ -261,6 +294,8 @@ export const App: React.FC = () => {
             onTruckChange={setSelectedTruck}
             selectedDay={selectedDay}
             onDayChange={setSelectedDay}
+            selectedDate={selectedDate}
+            onDateChange={handleDateChange}
             availableTrucks={availableTrucks}
           />
         )}

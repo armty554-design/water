@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { DeliveryStop, DayOfWeek } from '../types/delivery';
 import { MapView } from './MapView';
+import { formatDateThai, getTodayDateKey, getRelativeDateKey } from '../services/weekHelper';
 
 interface DriverViewProps {
   stops: DeliveryStop[];
@@ -9,6 +10,8 @@ interface DriverViewProps {
   onTruckChange: (truck: string) => void;
   selectedDay: DayOfWeek;
   onDayChange: (day: DayOfWeek) => void;
+  selectedDate: string;
+  onDateChange: (date: string) => void;
   availableTrucks: { truckNo: string; count: number }[];
 }
 
@@ -19,6 +22,8 @@ export const DriverView: React.FC<DriverViewProps> = ({
   onTruckChange,
   selectedDay,
   onDayChange,
+  selectedDate,
+  onDateChange,
   availableTrucks
 }) => {
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
@@ -56,14 +61,14 @@ export const DriverView: React.FC<DriverViewProps> = ({
       <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-4 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           
-          {/* Truck & Day Pickers */}
-          <div className="flex items-center gap-3">
+          {/* Truck & Date Pickers */}
+          <div className="flex items-center gap-2.5 flex-wrap">
             <div className="flex items-center gap-1.5 text-xs">
               <span className="font-semibold text-slate-500">สายรถ:</span>
               <select
                 value={selectedTruck}
                 onChange={(e) => onTruckChange(e.target.value)}
-                className="bg-slate-50 border border-slate-300 font-bold text-slate-900 text-xs rounded-lg px-2.5 py-1 focus:outline-none"
+                className="bg-slate-50 border border-slate-300 font-bold text-slate-900 text-xs rounded-lg px-2 py-1 focus:outline-none"
               >
                 {availableTrucks.map(t => (
                   <option key={t.truckNo} value={t.truckNo}>
@@ -73,18 +78,32 @@ export const DriverView: React.FC<DriverViewProps> = ({
               </select>
             </div>
 
-            <div className="flex items-center gap-1.5 text-xs">
-              <span className="font-semibold text-slate-500">วันส่ง:</span>
-              <select
-                value={selectedDay}
-                onChange={(e) => onDayChange(e.target.value as DayOfWeek)}
-                className="bg-slate-50 border border-slate-300 font-bold text-slate-900 text-xs rounded-lg px-2.5 py-1 focus:outline-none"
+            {/* Quick date pills */}
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                onClick={() => onDateChange(getTodayDateKey())}
+                className={`px-2 py-1 rounded transition ${
+                  selectedDate === getTodayDateKey() ? 'bg-white font-bold text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
               >
-                {['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'].map(d => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+                วันนี้
+              </button>
+              <button
+                onClick={() => onDateChange(getRelativeDateKey(1))}
+                className={`px-2 py-1 rounded transition ${
+                  selectedDate === getRelativeDateKey(1) ? 'bg-white font-bold text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                พรุ่งนี้
+              </button>
             </div>
+
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => onDateChange(e.target.value)}
+              className="text-xs px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-900 focus:outline-none cursor-pointer"
+            />
           </div>
 
           {/* Mode Switcher */}

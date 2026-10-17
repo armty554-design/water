@@ -1,4 +1,4 @@
-// Helper utilities for calculating weeks of month and matching delivery conditions
+import { DayOfWeek } from '../types/delivery';
 
 export function getWeekOfMonth(date: Date = new Date()): number {
   const dayOfMonth = date.getDate();
@@ -6,9 +6,8 @@ export function getWeekOfMonth(date: Date = new Date()): number {
 }
 
 export function isBiWeeklyDue(date: Date = new Date()): boolean {
-  // Simple odd-week check or standard bi-weekly alternation
   const weekNum = getWeekOfMonth(date);
-  return weekNum % 2 !== 0; // Odd weeks default
+  return weekNum % 2 !== 0;
 }
 
 export interface DeliveryConditionFilter {
@@ -49,6 +48,46 @@ export function shouldIncludeMemberByCondition(
     return filter.selectedMonthlyWeek === 4;
   }
 
-  // Fallback for others
   return filter.includeRegular;
+}
+
+const THAI_DAYS: DayOfWeek[] = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+
+const THAI_MONTHS = [
+  'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+  'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
+];
+
+export function getDayOfWeekFromDate(dateStr: string): DayOfWeek {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const d = new Date(year, month - 1, day);
+  const dayName = THAI_DAYS[d.getDay()];
+  return dayName === 'อาทิตย์' ? 'จันทร์' : dayName;
+}
+
+export function formatDateThai(dateStr: string): string {
+  if (!dateStr) return '';
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const d = new Date(year, month - 1, day);
+  const dayName = THAI_DAYS[d.getDay()];
+  const monthName = THAI_MONTHS[d.getMonth()];
+  const thaiYear = d.getFullYear() + 543;
+  return `${dayName}ที่ ${d.getDate()} ${monthName} ${thaiYear}`;
+}
+
+export function getTodayDateKey(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function getRelativeDateKey(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }

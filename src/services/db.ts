@@ -22,27 +22,45 @@ export async function updateSingleMember(memberId: string, partial: Partial<Memb
   });
 }
 
-export function getRouteKey(truckNo: string, day: DayOfWeek): string {
-  return `${truckNo}_${day}`;
+export function getRouteKey(truckNo: string, dayOrDate: string): string {
+  return `${truckNo}_${dayOrDate}`;
 }
 
-export async function saveRoute(truckNo: string, day: DayOfWeek, stops: DeliveryStop[]): Promise<void> {
-  const key = getRouteKey(truckNo, day);
+export async function saveRoute(
+  truckNo: string,
+  day: DayOfWeek,
+  stops: DeliveryStop[],
+  dateKey?: string
+): Promise<void> {
+  const actualDate = dateKey || new Date().toISOString().slice(0, 10);
   const routes = (await get<Record<string, RouteAssignment>>(ROUTES_KEY)) || {};
-  routes[key] = {
+  
+  const assignment: RouteAssignment = {
     truckNo,
     day,
-    dateKey: new Date().toISOString().slice(0, 10),
+    dateKey: actualDate,
     stops,
     updatedAt: new Date().toISOString()
   };
+
+  // Save by specific calendar date
+  routes[`${truckNo}_${actualDate}`] = assignment;
+  // Also save by day of week template
+  routes[`${truckNo}_${day}`] = assignment;
+
   await set(ROUTES_KEY, routes);
 }
 
-export async function getRoute(truckNo: string, day: DayOfWeek): Promise<RouteAssignment | null> {
-  const key = getRouteKey(truckNo, day);
+export async function getRoute(
+  truckNo: string,
+  day: DayOfWeek,
+  dateKey?: string
+): Promise<RouteAssignment | null> {
   const routes = (await get<Record<string, RouteAssignment>>(ROUTES_KEY)) || {};
-  return routes[key] || null;
+  if (dateKey && routes[`${truckNo}_${dateKey}`]) {
+    return routes[`${truckNo}_${dateKey}`];
+  }
+  return routes[`${truckNo}_${day}`] || null;
 }
 
 export async function getAllRoutes(): Promise<Record<string, RouteAssignment>> {
@@ -55,9 +73,9 @@ export async function markStopCompleted(
   day: DayOfWeek,
   memberId: string,
   isCompleted: boolean,
-  notes?: string
+  dateKey?: string
 ): Promise<void> {
-  const route = await getRoute(truckNo, day);
+  const route = await getRoute(truckNo, day, dateKey);
   if (!route) return;
 
   const updatedStops = route.stops.map(s => {
@@ -65,14 +83,13 @@ export async function markStopCompleted(
       return {
         ...s,
         isCompleted,
-        completedAt: isCompleted ? new Date().toISOString() : undefined,
-        notes: notes !== undefined ? notes : s.notes
+        completedAt: isCompleted ? new Date().toISOString() : undefined
       };
     }
     return s;
   });
 
-  await saveRoute(truckNo, day, updatedStops);
+  await saveRoute(truckNo, day, updatedStops, dateKey);
 }
 
 export async function addAttachment(memberId: string, attachment: Attachment): Promise<void> {
@@ -83,7 +100,6 @@ export async function addAttachment(memberId: string, attachment: Attachment): P
   allAtt[memberId].unshift(attachment);
   await set(ATTACHMENTS_KEY, allAtt);
 
-  // Also update in member list
   await update<Member[]>(MEMBERS_KEY, (prev) => {
     if (!prev) return [];
     return prev.map(m => {
