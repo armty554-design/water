@@ -108,6 +108,31 @@ export function isFirebaseConfigured(): boolean {
   return getFirebaseConfig() !== null;
 }
 
+/**
+ * Recursively remove all undefined values and delete undefined keys
+ * so Firestore accepts the data without throwing "Unsupported field value: undefined".
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return null as any;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter(item => item !== undefined)
+      .map(item => sanitizeForFirestore(item)) as any;
+  }
+  if (typeof data === 'object') {
+    const cleanObj: Record<string, any> = {};
+    for (const [key, val] of Object.entries(data)) {
+      if (val !== undefined) {
+        cleanObj[key] = sanitizeForFirestore(val);
+      }
+    }
+    return cleanObj as any;
+  }
+  return data;
+}
+
 // -------------------------------------------------------------
 // Cloud Firestore Data Operations (Routes, Stops & Real-time Sync)
 // -------------------------------------------------------------
@@ -119,14 +144,15 @@ export async function saveRouteToCloud(assignment: RouteAssignment): Promise<boo
   const db = getFirebaseDb();
   if (!db) return false;
 
-  const docId = `${assignment.truckNo}_${assignment.dateKey || assignment.day}`;
+  const docId = `${assignment.truckNo}_${assignment.dateKey || assignment.day}`.replace(/\//g, '_');
   const routeRef = doc(db, 'routes', docId);
 
-  await setDoc(routeRef, {
+  const payload = sanitizeForFirestore({
     ...assignment,
     updatedAt: new Date().toISOString()
   });
 
+  await setDoc(routeRef, payload);
   return true;
 }
 
@@ -137,7 +163,7 @@ export async function getRouteFromCloud(truckNo: string, dateKey: string): Promi
   const db = getFirebaseDb();
   if (!db) return null;
 
-  const docId = `${truckNo}_${dateKey}`;
+  const docId = `${truckNo}_${dateKey}`.replace(/\//g, '_');
   const routeRef = doc(db, 'routes', docId);
   const snap = await getDoc(routeRef);
 
@@ -158,7 +184,7 @@ export function subscribeToRouteCloud(
   const db = getFirebaseDb();
   if (!db) return null;
 
-  const docId = `${truckNo}_${dateKey}`;
+  const docId = `${truckNo}_${dateKey}`.replace(/\//g, '_');
   const routeRef = doc(db, 'routes', docId);
 
   return onSnapshot(routeRef, (snap) => {
@@ -184,7 +210,7 @@ export async function markStopCompletedInCloud(
   const db = getFirebaseDb();
   if (!db) return false;
 
-  const docId = `${truckNo}_${dateKey}`;
+  const docId = `${truckNo}_${dateKey}`.replace(/\//g, '_');
   const routeRef = doc(db, 'routes', docId);
   const snap = await getDoc(routeRef);
 
@@ -193,21 +219,27 @@ export async function markStopCompletedInCloud(
   const data = snap.data() as RouteAssignment;
   const updatedStops = (data.stops || []).map((s: DeliveryStop) => {
     if (s.member.id === memberId) {
-      return {
+      const stopUpdate: DeliveryStop = {
         ...s,
-        isCompleted,
-        completedAt: isCompleted ? new Date().toISOString() : undefined
+        isCompleted
       };
+      if (isCompleted) {
+        stopUpdate.completedAt = new Date().toISOString();
+      } else {
+        delete stopUpdate.completedAt;
+      }
+      return stopUpdate;
     }
     return s;
   });
 
-  await setDoc(routeRef, {
+  const payload = sanitizeForFirestore({
     ...data,
     stops: updatedStops,
     updatedAt: new Date().toISOString()
   });
 
+  await setDoc(routeRef, payload);
   return true;
 }
 
@@ -222,31 +254,41 @@ export async function saveMembersToCloud(members: Member[]): Promise<boolean> {
   // Group members by truckNo
   const truckGroups: Record<string, Member[]> = {};
   members.forEach(m => {
-    const truck = m.truckNo || 'UNASSIGNED';
+    const rawTruck = m.truckNo ? String(m.truckNo).trim() : 'UNASSIGNED';
+    const truck = rawTruck.replace(/\//g, '_') || 'UNASSIGNED';
     if (!truckGroups[truck]) truckGroups[truck] = [];
     truckGroups[truck].push(m);
   });
 
-  const batch = writeBatch(db);
-  for (const [truckNo, memberList] of Object.entries(truckGroups)) {
-    const ref = doc(db, 'truck_members', truckNo);
-    batch.set(ref, {
-      truckNo,
-      members: memberList,
-      count: memberList.length,
-      updatedAt: new Date().toISOString()
-    });
+  const entries = Object.entries(truckGroups);
+  const CHUNK_SIZE = 200; // Firestore batch maximum is 500
+
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+    const chunk = entries.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+
+    for (const [truckNo, memberList] of chunk) {
+      const ref = doc(db, 'truck_members', truckNo);
+      const payload = sanitizeForFirestore({
+        truckNo,
+        members: memberList,
+        count: memberList.length,
+        updatedAt: new Date().toISOString()
+      });
+      batch.set(ref, payload);
+    }
+
+    await batch.commit();
   }
 
   // Also save a lightweight metadata summary
   const metaRef = doc(db, 'system', 'meta');
-  batch.set(metaRef, {
+  await setDoc(metaRef, sanitizeForFirestore({
     totalMembers: members.length,
-    trucksCount: Object.keys(truckGroups).length,
+    trucksCount: entries.length,
     updatedAt: new Date().toISOString()
-  });
+  }));
 
-  await batch.commit();
   return true;
 }
 
