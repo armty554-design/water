@@ -24,6 +24,7 @@ export interface Attachment {
 export interface Member {
   id: string; // รหัสสมาชิก e.g. "00033"
   name: string; // ชื่อ-นามสกุล
+  address?: string; // ที่อยู่จัดส่ง / สถานที่ส่งน้ำ
   deliveryDays: string[]; // e.g. ["จันทร์", "พุธ"]
   additionalRound?: string; // รอบเสริม
   truckNo: string; // เบอร์รถ e.g. "13106"

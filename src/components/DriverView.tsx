@@ -235,6 +235,14 @@ export const DriverView: React.FC<DriverViewProps> = ({
                 </div>
               </div>
 
+              {/* Address Row in Hero Card */}
+              <div className="text-[11px] text-slate-700 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100 flex items-start gap-1.5 mt-2">
+                <span className="font-semibold text-slate-800 shrink-0">ที่อยู่/จุดส่ง:</span>
+                <span className="font-medium text-slate-900 truncate">
+                  {currentStop.member.address || currentStop.member.warningNotes || currentStop.member.receiveType || 'ตามพิกัด GPS'}
+                </span>
+              </div>
+
               {/* Action Buttons */}
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 

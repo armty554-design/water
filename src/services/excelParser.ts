@@ -110,6 +110,13 @@ export function parseExcelFile(arrayBuffer: ArrayBuffer): Member[] {
     headerIndex = 5; // default fallback
   }
 
+  let addressColIndex = -1;
+  if (rows[headerIndex]) {
+    addressColIndex = rows[headerIndex].findIndex(cell => 
+      typeof cell === 'string' && (cell.includes('ที่อยู่') || cell.toLowerCase().includes('address'))
+    );
+  }
+
   const members: Member[] = [];
 
   for (let i = headerIndex + 1; i < rows.length; i++) {
@@ -155,10 +162,12 @@ export function parseExcelFile(arrayBuffer: ArrayBuffer): Member[] {
     const targetTime = row[16] !== undefined ? String(row[16]).trim() : undefined;
     const rawScheduleText = row[17] ? String(row[17]).trim() : '';
     const schedules = parseScheduleText(rawScheduleText);
+    const address = addressColIndex !== -1 && row[addressColIndex] ? String(row[addressColIndex]).trim() : undefined;
 
     members.push({
       id,
       name,
+      address,
       deliveryDays,
       additionalRound,
       truckNo,

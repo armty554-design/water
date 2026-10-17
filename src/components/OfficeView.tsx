@@ -564,6 +564,7 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                         </div>
 
                         <div className="text-[10px] text-slate-500 mt-0.5 truncate">
+                          {stop.member.address ? <span className="font-medium text-slate-700">ที่อยู่: {stop.member.address} • </span> : null}
                           {stop.member.receiveType}
                         </div>
                       </div>

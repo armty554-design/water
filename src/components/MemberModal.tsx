@@ -15,6 +15,7 @@ export const MemberModal: React.FC<MemberModalProps> = ({
 }) => {
   const [formData, setFormData] = useState({
     name: member.name,
+    address: member.address || '',
     truckNo: member.truckNo,
     receiveType: member.receiveType,
     deliveryCondition: member.deliveryCondition,
@@ -74,6 +75,7 @@ export const MemberModal: React.FC<MemberModalProps> = ({
     const updated: Member = {
       ...member,
       name: formData.name,
+      address: formData.address.trim() || undefined,
       truckNo: formData.truckNo,
       receiveType: formData.receiveType,
       deliveryCondition: formData.deliveryCondition,
@@ -133,6 +135,19 @@ export const MemberModal: React.FC<MemberModalProps> = ({
                   onChange={e => setFormData({ ...formData, name: e.target.value })}
                   className="w-full text-xs px-3 py-1.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-slate-900 focus:outline-none"
                   required
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">
+                  ที่อยู่จัดส่ง / สถานที่ส่งน้ำ
+                </label>
+                <input
+                  type="text"
+                  value={formData.address}
+                  onChange={e => setFormData({ ...formData, address: e.target.value })}
+                  placeholder="เช่น 123/45 ซ.สุขุมวิท 50 หรือ จุดวางถัง"
+                  className="w-full text-xs px-3 py-1.5 border border-slate-300 rounded-lg focus:ring-1 focus:ring-slate-900 focus:outline-none"
                 />
               </div>
 

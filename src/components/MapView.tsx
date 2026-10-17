@@ -106,6 +106,7 @@ export const MapView: React.FC<MapViewProps> = ({
       const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
       const timeWindow = stop.daySchedule?.timeWindow || stop.member.targetTime || 'ไม่ระบุ';
       const avgQty = stop.daySchedule?.avgQuantity || 0;
+      const addressDisplay = stop.member.address || stop.member.warningNotes || stop.member.receiveType || 'ตามพิกัด GPS ที่ปักหมุด';
 
       const popupContent = document.createElement('div');
       popupContent.className = 'text-slate-800';
@@ -121,6 +122,10 @@ export const MapView: React.FC<MapViewProps> = ({
         
         <table style="width: 100%; font-size: 11px; margin-bottom: 10px; border-collapse: collapse;">
           <tr>
+            <td style="color: #64748b; padding: 2px 0; vertical-align: top; width: 35%;">ที่อยู่/จุดส่ง:</td>
+            <td style="font-weight: 600; text-align: right; color: #0f172a; word-break: break-word;">${addressDisplay}</td>
+          </tr>
+          <tr>
             <td style="color: #64748b; padding: 2px 0;">ช่วงเวลาส่ง:</td>
             <td style="font-weight: 600; text-align: right;">${timeWindow}</td>
           </tr>
@@ -129,8 +134,12 @@ export const MapView: React.FC<MapViewProps> = ({
             <td style="font-weight: 600; text-align: right; color: #0284c7;">${avgQty} ถัง</td>
           </tr>
           <tr>
-            <td style="color: #64748b; padding: 2px 0;">ประเภทรับน้ำ:</td>
+            <td style="color: #64748b; padding: 2px 0;">รับน้ำ:</td>
             <td style="font-weight: 500; text-align: right; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${stop.member.receiveType}</td>
+          </tr>
+          <tr>
+            <td style="color: #64748b; padding: 2px 0;">พิกัด GPS:</td>
+            <td style="font-family: monospace; font-size: 10px; text-align: right; color: #64748b;">${lat.toFixed(5)}, ${lng.toFixed(5)}</td>
           </tr>
         </table>
 
