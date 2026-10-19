@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { DeliveryStop, UserRole } from '../types/delivery';
+import { fetchRoadRoutePolyline } from '../services/roadHelper';
 
 interface MapViewProps {
   stops: DeliveryStop[];
@@ -174,12 +175,30 @@ export const MapView: React.FC<MapViewProps> = ({
     });
 
     if (latLngs.length > 1) {
+      // Initial dashed line
       polylineRef.current = L.polyline(latLngs, {
         color: '#2563eb',
-        weight: 2.5,
-        opacity: 0.8,
+        weight: 2,
+        opacity: 0.5,
         dashArray: '4, 4'
       }).addTo(map);
+
+      // Real road geometry following streets and curves
+      fetchRoadRoutePolyline(validStops.map(s => ({ lat: s.member.lat, lng: s.member.lng }))).then(res => {
+        if (!mapInstanceRef.current || mapInstanceRef.current !== map) return;
+        if (polylineRef.current) {
+          polylineRef.current.remove();
+        }
+        if (res.coordinates.length > 1) {
+          polylineRef.current = L.polyline(res.coordinates, {
+            color: '#2563eb',
+            weight: 3.5,
+            opacity: 0.85,
+            lineCap: 'round',
+            lineJoin: 'round'
+          }).addTo(map);
+        }
+      });
     }
 
     if (latLngs.length > 0) {

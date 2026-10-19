@@ -373,8 +373,16 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                 ตามช่วงเวลานัด
               </button>
               <button
+                onClick={() => handleAutoSequence('road')}
+                title="จัดเรียงเกาะตามแนวเส้นถนนและซอย ไม่ข้ามฝั่งถนนไปมา"
+                className="px-2.5 py-1 hover:bg-white rounded text-blue-700 font-semibold transition flex items-center gap-1"
+              >
+                <span>🛣️</span>
+                <span>ตามแนวเส้นถนน</span>
+              </button>
+              <button
                 onClick={() => handleAutoSequence('gps')}
-                title="จัดเรียงตามเส้นทางพิกัด GPS ที่ใกล้ที่สุด"
+                title="จัดเรียงตามเส้นทางพิกัด GPS ที่ใกล้ที่สุด (คำนึงถึงฝั่งถนน)"
                 className="px-2.5 py-1 hover:bg-white rounded text-slate-700 transition"
               >
                 ตามระยะทาง GPS

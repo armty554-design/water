@@ -1,4 +1,5 @@
 import { DeliveryStop, DayOfWeek } from '../types/delivery';
+import { calculateRoadAwareDistance, sequenceStopsByRoadCorridor } from './roadHelper';
 
 // Calculate Haversine distance between two coordinates in kilometers
 export function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -14,7 +15,9 @@ export function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lo
   return R * c;
 }
 
-export type AutoSequenceMode = 'historical' | 'timewindow' | 'gps';
+export { sequenceStopsByRoadCorridor };
+
+export type AutoSequenceMode = 'historical' | 'timewindow' | 'gps' | 'road';
 
 export function autoSequenceStops(
   stops: DeliveryStop[],
@@ -58,8 +61,11 @@ export function autoSequenceStops(
       if (aTime !== bTime) return aTime - bTime;
       return a.member.id.localeCompare(b.member.id);
     });
+  } else if (mode === 'road') {
+    // 3. Road Corridor Sequence (minimizes road crossing & U-turns)
+    return sequenceStopsByRoadCorridor(stopsCopy);
   } else if (mode === 'gps') {
-    // 3. Smart GPS Route (Nearest Neighbor with time window buckets)
+    // 4. Smart Road-Aware GPS Route (Nearest Neighbor with time window buckets & road corridor)
     // First, divide into Morning (< 12:00) and Afternoon (>= 12:00)
     const morning: DeliveryStop[] = [];
     const afternoon: DeliveryStop[] = [];
@@ -112,12 +118,8 @@ export function autoSequenceStops(
         for (let i = 0; i < remaining.length; i++) {
           const candidate = remaining[i];
           if (candidate.member.hasGps) {
-            const dist = calculateDistanceKm(
-              current.member.lat,
-              current.member.lng,
-              candidate.member.lat,
-              candidate.member.lng
-            );
+            // Use road-aware distance to avoid jumping across divided roads/canals
+            const dist = calculateRoadAwareDistance(current.member, candidate.member);
             if (dist < nearestDist) {
               nearestDist = dist;
               nearestIdx = i;

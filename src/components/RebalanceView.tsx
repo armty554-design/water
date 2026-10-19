@@ -9,6 +9,11 @@ import {
   calculateMemberMonthlyBottles,
   calculateDistanceKm
 } from '../services/rebalance';
+import { 
+  parseAddressRoadInfo, 
+  sequenceStopsByRoadCorridor, 
+  fetchRoadRoutePolyline 
+} from '../services/roadHelper';
 import { saveMembers } from '../services/db';
 import { saveMembersToCloud, isFirebaseConfigured } from '../services/firebase';
 import { parseAvgBottlesFile, mergeAvgBottlesIntoMembers } from '../services/excelParser';
@@ -62,11 +67,13 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const [applyProgress, setApplyProgress] = useState<string | null>(null);
   const [applySuccessMsg, setApplySuccessMsg] = useState<string | null>(null);
 
-  // Map refs
+  // Map refs & Road Routing State
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const clusterCircleLayerRef = useRef<L.LayerGroup | null>(null);
+  const routePolylineLayerRef = useRef<L.LayerGroup | null>(null);
+  const [roadStats, setRoadStats] = useState<{ distanceKm: number; durationMinutes: number } | null>(null);
 
   // 1. Baseline Truck Statistics
   const baselineStats = useMemo(() => {
@@ -333,13 +340,15 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
       markersLayerRef.current = L.layerGroup().addTo(map);
       clusterCircleLayerRef.current = L.layerGroup().addTo(map);
+      routePolylineLayerRef.current = L.layerGroup().addTo(map);
       mapInstanceRef.current = map;
     }
 
     const map = mapInstanceRef.current;
     const markersLayer = markersLayerRef.current;
     const circleLayer = clusterCircleLayerRef.current;
-    if (!map || !markersLayer || !circleLayer) return;
+    const polylineLayer = routePolylineLayerRef.current;
+    if (!map || !markersLayer || !circleLayer || !polylineLayer) return;
 
     const timer = setTimeout(() => {
       try {
@@ -349,6 +358,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
     markersLayer.clearLayers();
     circleLayer.clearLayers();
+    polylineLayer.clearLayers();
 
     const bounds = L.latLngBounds([]);
     let count = 0;
@@ -357,27 +367,96 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     const relevantTrucks = new Set([...selectedDonorTrucks, targetRecipientTruck]);
     const stagedClusterIds = new Set(Array.from(stagedTransfers.keys()));
 
-    // Draw Cluster Circles
-    donorClustersMap.forEach((clusters, tNo) => {
+    // Draw Cluster Circles (with tighter, road-corridor radius)
+    donorClustersMap.forEach((clusters) => {
       clusters.forEach(c => {
         const isStaged = stagedClusterIds.has(c.clusterId);
         const isHovered = hoveredNearbyId === c.clusterId;
 
         if (c.radiusKm > 0) {
           const circle = L.circle([c.seedLat, c.seedLng], {
-            radius: c.radiusKm * 1000,
+            radius: Math.min(c.radiusKm, 3.8) * 1000,
             color: isStaged ? '#9333ea' : (isHovered ? '#f59e0b' : '#3b82f6'),
-            weight: isStaged || isHovered ? 3 : 1.5,
+            weight: isStaged || isHovered ? 2.5 : 1.2,
             dashArray: isStaged ? undefined : '4, 4',
             fillColor: isStaged ? '#9333ea' : (isHovered ? '#f59e0b' : '#3b82f6'),
-            fillOpacity: isStaged ? 0.2 : 0.08
+            fillOpacity: isStaged ? 0.15 : 0.06
           });
           circleLayer.addLayer(circle);
         }
       });
     });
 
-    // Draw Member Markers
+    // 1. Prepare transferred stops to sequence them along road corridors
+    const transferredList: Member[] = [];
+    members.forEach(m => {
+      if (!m.hasGps || !m.lat || !m.lng) return;
+      if (selectedDeliveryDays.length > 0 && !m.deliveryDays.some(d => selectedDeliveryDays.some(sd => d.includes(sd)))) {
+        return;
+      }
+      const isMoved = liveStats.movedMemberMap.has(m.id);
+      const isRecipient = m.truckNo.trim() === targetRecipientTruck;
+      if (isMoved || isRecipient) {
+        transferredList.push(m);
+      }
+    });
+
+    // Sequence transferred stops strictly along road corridors to prevent jumping across road
+    const pseudoStops = transferredList.map((m, idx) => ({
+      sequence: idx + 1,
+      member: m,
+      isCompleted: false
+    }));
+    const sequencedTransferred = sequenceStopsByRoadCorridor(pseudoStops);
+    const memberSequenceMap = new Map<string, number>();
+    sequencedTransferred.forEach(s => {
+      memberSequenceMap.set(s.member.id, s.sequence);
+    });
+
+    // 2. Fetch & Render Real Road Polyline for Transferred Stops
+    if (sequencedTransferred.length > 1) {
+      const roadPoints = sequencedTransferred
+        .filter(s => s.member.lat && s.member.lng)
+        .map(s => ({ lat: s.member.lat, lng: s.member.lng }));
+
+      fetchRoadRoutePolyline(roadPoints).then(res => {
+        if (!polylineLayer || mapInstanceRef.current !== map) return;
+        polylineLayer.clearLayers();
+        if (res.coordinates.length > 1) {
+          // Purple glow casing
+          const glowLine = L.polyline(res.coordinates, {
+            color: '#6b21a8',
+            weight: 6,
+            opacity: 0.45,
+            lineCap: 'round',
+            lineJoin: 'round'
+          });
+          // Main Road line
+          const mainLine = L.polyline(res.coordinates, {
+            color: '#9333ea',
+            weight: 3.5,
+            opacity: 0.9,
+            lineCap: 'round',
+            lineJoin: 'round'
+          });
+          // Center dashed line
+          const dashLine = L.polyline(res.coordinates, {
+            color: '#ffffff',
+            weight: 1.2,
+            opacity: 0.85,
+            dashArray: '5, 8'
+          });
+          polylineLayer.addLayer(glowLine);
+          polylineLayer.addLayer(mainLine);
+          polylineLayer.addLayer(dashLine);
+        }
+        setRoadStats({ distanceKm: res.distanceKm, durationMinutes: res.durationMinutes });
+      });
+    } else {
+      setRoadStats(null);
+    }
+
+    // 3. Draw Member Markers
     members.forEach(m => {
       if (!relevantTrucks.has(m.truckNo.trim())) return;
       if (!m.hasGps || !m.lat || !m.lng) return;
@@ -389,32 +468,54 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
       const isMoved = liveStats.movedMemberMap.has(m.id);
       const isRecipient = m.truckNo.trim() === targetRecipientTruck;
-      
-      let fillColor = '#3b82f6'; // donor original
+      const roadInfo = parseAddressRoadInfo(m.address);
+
+      let marker: L.Layer;
+
       if (isMoved || isRecipient) {
-        fillColor = '#9333ea'; // purple for target recipient truck
+        // Transferred Stop: Show sequence badge along road corridor
+        const seqNumber = memberSequenceMap.get(m.id) || 1;
+        const divIcon = L.divIcon({
+          className: 'road-sequence-marker',
+          html: `
+            <div style="background-color: #7e22ce; color: #ffffff; border: 2px solid #ffffff; width: 24px; height: 24px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; box-shadow: 0 2px 6px rgba(126, 34, 206, 0.45); cursor: pointer; transition: transform 0.15s ease;">
+              ${seqNumber}
+            </div>
+          `,
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+          popupAnchor: [0, -12]
+        });
+        marker = L.marker([m.lat, m.lng], { icon: divIcon });
+      } else {
+        // Donor Original Stop: clean blue circle marker
+        marker = L.circleMarker([m.lat, m.lng], {
+          radius: 4,
+          fillColor: '#3b82f6',
+          color: '#ffffff',
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.65
+        });
       }
 
-      const marker = L.circleMarker([m.lat, m.lng], {
-        radius: isMoved ? 6.5 : 4,
-        fillColor,
-        color: '#ffffff',
-        weight: isMoved ? 2 : 1,
-        opacity: 1,
-        fillOpacity: isMoved ? 0.95 : 0.65
-      });
+      const seqNumber = memberSequenceMap.get(m.id);
+      const parityLabel = roadInfo.parity === 'odd' ? 'ฝั่งซอยเลขคี่' : (roadInfo.parity === 'even' ? 'ฝั่งซอยเลขคู่' : 'ริมถนน');
 
       marker.bindPopup(`
-        <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4; min-width: 180px;">
+        <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4; min-width: 190px;">
           <strong style="color: #0f172a;">${m.name}</strong> (${m.id})<br/>
           <span style="color: #64748b; font-size: 11px;">${m.address || '-'}</span><br/>
           <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
+          ${roadInfo.road ? `<span style="color: #4338ca; font-weight: 600;">🛣️ ถนน: ${roadInfo.road}</span><br/>` : ''}
+          ${roadInfo.parity !== 'none' ? `<span style="color: #64748b; font-size: 11px;">ฝั่งถนน: <strong>${parityLabel}</strong></span><br/>` : ''}
+          ${(isMoved || isRecipient) && seqNumber ? `<div style="margin: 3px 0; font-size: 11px; color: #7e22ce; font-weight: bold;">ลำดับวิ่งส่งในสาย ${targetRecipientTruck}: ลำดับที่ ${seqNumber}</div>` : ''}
           <span>สายรถ: <strong>${isMoved ? `${m.truckNo} &rarr; ${targetRecipientTruck}` : m.truckNo}</strong></span><br/>
           <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
           <span>ยอดส่ง: <strong>${calculateMemberMonthlyBottles(m)}</strong> ถัง/เดือน</span><br/>
           <div style="margin-top: 6px; text-align: center;">
             <span style="display: inline-block; padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 11px; background: ${isMoved ? '#f3e8ff' : '#eff6ff'}; color: ${isMoved ? '#7e22ce' : '#1d4ed8'}; border: 1px solid ${isMoved ? '#d8b4fe' : '#bfdbfe'};">
-              ${isMoved ? '✓ ย้ายเข้าสาย ' + targetRecipientTruck + ' แล้ว' : 'อยู่ในสายเดิม ' + m.truckNo}
+              ${isMoved ? '✓ ย้ายเข้าสาย ' + targetRecipientTruck + ' แล้ว (คลิกเพื่อยกเลิก)' : 'อยู่ในสายเดิม ' + m.truckNo + ' (คลิกเพื่อโอนย้าย)'}
             </span>
           </div>
         </div>
@@ -970,15 +1071,26 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           {/* RIGHT PANEL: Live Interactive Map (55% Width) */}
           <div className="lg:col-span-7 bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-2">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-600 gap-2 border-b border-slate-100 pb-2">
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-4 flex-wrap">
                 <span className="flex items-center gap-1.5">
                   <span className="w-3 h-3 rounded-full bg-blue-500" />
                   <span className="font-semibold">สายต้นทาง ({selectedDonorTrucks.join(', ')})</span>
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-200" />
-                  <span className="font-bold text-purple-800">โอนย้ายเข้าสาย {targetRecipientTruck}</span>
+                  <span className="font-bold text-purple-800">โอนย้ายเข้าสาย {targetRecipientTruck} (ตัวเลข = ลำดับส่ง)</span>
                 </span>
+                {roadStats && roadStats.distanceKm > 0 && (
+                  <span className="inline-flex items-center gap-1.5 bg-purple-50 text-purple-900 border border-purple-200 px-2 py-0.5 rounded text-[11px] font-bold">
+                    <span>🛣️ เส้นทางขับจริง:</span>
+                    <span className="text-purple-700">~{roadStats.distanceKm} กม.</span>
+                    <span className="text-slate-400 font-normal">|</span>
+                    <span className="text-purple-700">~{roadStats.durationMinutes} นาที</span>
+                    <span className="text-[10px] bg-purple-200/70 text-purple-800 px-1 py-0.2 rounded font-semibold ml-0.5">
+                      ✓ อ้างอิงแนวเส้นถนน
+                    </span>
+                  </span>
+                )}
               </div>
               <span className="text-[11px] text-slate-500 font-medium bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
                 💡 คลิกที่หมุดบนแผนที่เพื่อเลือก/ยกเลิกจุดส่งใกล้เคียงรายจุดได้ทันที

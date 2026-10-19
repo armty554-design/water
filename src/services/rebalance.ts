@@ -8,8 +8,9 @@ import {
   SpatialClusterCandidate 
 } from '../types/delivery';
 import { calculateDistanceKm } from './autoSequence';
+import { parseAddressRoadInfo, calculateRoadAwareDistance } from './roadHelper';
 
-export { calculateDistanceKm };
+export { calculateDistanceKm, parseAddressRoadInfo, calculateRoadAwareDistance };
 
 /**
  * Calculates monthly bottle volume for a single member.
@@ -241,71 +242,140 @@ export function findSpatialClustersForTruck(
     }];
   }
 
-  // Sort by furthest distance from center to find boundary/edge seeds for clean cut off
-  withDistance.sort((a, b) => b.distFromCenter - a.distFromCenter);
+  // 1. Density & Seed Candidate Selection
+  // Count neighbors within 2.5km to avoid picking isolated outliers as seeds
+  const scoredCandidates = withDistance.map(item => {
+    const m = item.member;
+    const roadInfo = parseAddressRoadInfo(m.address);
+    let neighborCount = 0;
 
-  // Select distinct seed points around different geographic sectors (Edge, North/East, South/West)
+    withDistance.forEach(other => {
+      if (other.member.id !== m.id) {
+        const d = calculateDistanceKm(m.lat, m.lng, other.member.lat, other.member.lng);
+        if (d <= 2.5) neighborCount++;
+      }
+    });
+
+    // Score combines edge distance, local density, and road identification
+    const roadBonus = roadInfo.road ? 3 : (roadInfo.village ? 2 : 0);
+    const score = (neighborCount * 1.5) + roadBonus + (item.distFromCenter * 0.4);
+
+    return {
+      member: m,
+      roadInfo,
+      neighborCount,
+      distFromCenter: item.distFromCenter,
+      score
+    };
+  });
+
+  // Filter out completely isolated stops if we have enough members
+  const viableCandidates = withDistance.length >= 4
+    ? scoredCandidates.filter(c => c.neighborCount >= 1)
+    : scoredCandidates;
+
+  const candidatePool = viableCandidates.length > 0 ? viableCandidates : scoredCandidates;
+  candidatePool.sort((a, b) => b.score - a.score);
+
+  // Pick up to 3 diverse seed candidates separated by at least 1.8km
   const seedCandidates: Member[] = [];
-  seedCandidates.push(withDistance[0].member); // furthest edge
+  if (candidatePool.length > 0) {
+    seedCandidates.push(candidatePool[0].member);
+  }
 
-  // Find second seed that is far from first seed
-  for (let i = 1; i < withDistance.length; i++) {
-    const candidate = withDistance[i].member;
-    const d = calculateDistanceKm(seedCandidates[0].lat, seedCandidates[0].lng, candidate.lat, candidate.lng);
-    if (d > 2.0) { // at least 2km apart
-      seedCandidates.push(candidate);
-      break;
+  for (let i = 1; i < candidatePool.length && seedCandidates.length < 3; i++) {
+    const cand = candidatePool[i].member;
+    const isFarEnough = seedCandidates.every(s => calculateDistanceKm(s.lat, s.lng, cand.lat, cand.lng) >= 1.8);
+    if (isFarEnough) {
+      seedCandidates.push(cand);
     }
   }
 
-  // Find third seed if possible
-  if (seedCandidates.length === 2) {
-    for (let i = 1; i < withDistance.length; i++) {
-      const candidate = withDistance[i].member;
-      const d1 = calculateDistanceKm(seedCandidates[0].lat, seedCandidates[0].lng, candidate.lat, candidate.lng);
-      const d2 = calculateDistanceKm(seedCandidates[1].lat, seedCandidates[1].lng, candidate.lat, candidate.lng);
-      if (d1 > 1.8 && d2 > 1.8) {
-        seedCandidates.push(candidate);
-        break;
-      }
-    }
+  // Fallback: if not enough diverse seeds, use top candidates
+  if (seedCandidates.length === 0 && donorMembers.length > 0) {
+    seedCandidates.push(donorMembers[0]);
   }
 
   const clusters: SpatialClusterCandidate[] = [];
+  const MAX_STEP_JUMP_KM = 2.5; // Maximum allowable step jump between consecutive stops
+  const MAX_CLUSTER_RADIUS_KM = 3.8; // Hard cap on cluster radius to prevent sprawling across zones
 
   seedCandidates.forEach((seed, index) => {
-    // Sort all donor members strictly by GPS distance to this seed point (Nearest Neighbors first!)
-    const sortedBySeed = [...donorMembers].map(m => {
-      let d = 9999;
-      if (m.hasGps && m.lat && m.lng) {
-        d = calculateDistanceKm(seed.lat, seed.lng, m.lat, m.lng);
-      }
-      return { member: m, distToSeed: d };
-    }).sort((a, b) => a.distToSeed - b.distToSeed);
-
-    // Expand cluster pocket radially until target cut bottles is reached
-    const clusterMembers: Member[] = [];
-    let accumulatedMonthlyBottles = 0;
+    const clusterMembers: Member[] = [seed];
+    let accumulatedMonthlyBottles = calculateMemberMonthlyBottles(seed);
     let maxRadiusKm = 0;
 
-    for (const item of sortedBySeed) {
-      clusterMembers.push(item.member);
-      accumulatedMonthlyBottles += calculateMemberMonthlyBottles(item.member);
-      if (item.distToSeed < 9000 && item.distToSeed > maxRadiusKm) {
-        maxRadiusKm = item.distToSeed;
+    // Remaining pool of donor members
+    const remaining = donorMembers.filter(m => m.id !== seed.id && m.hasGps && m.lat && m.lng);
+
+    // Expand along the road corridor step-by-step
+    while (remaining.length > 0 && accumulatedMonthlyBottles < targetMonthlyBottlesCut) {
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      let bestRawDist = Infinity;
+
+      for (let i = 0; i < remaining.length; i++) {
+        const candidate = remaining[i];
+        const distToSeed = calculateDistanceKm(seed.lat, seed.lng, candidate.lat, candidate.lng);
+
+        // Enforce hard cap radius from seed
+        if (distToSeed > MAX_CLUSTER_RADIUS_KM) continue;
+
+        // Find minimum road-aware distance to any member already in the cluster
+        for (const inCluster of clusterMembers) {
+          const rawDist = calculateDistanceKm(inCluster.lat, inCluster.lng, candidate.lat, candidate.lng);
+          const roadDist = calculateRoadAwareDistance(inCluster, candidate);
+
+          if (rawDist <= MAX_STEP_JUMP_KM && roadDist < bestDist) {
+            bestDist = roadDist;
+            bestRawDist = rawDist;
+            bestIdx = i;
+          }
+        }
       }
 
-      if (accumulatedMonthlyBottles >= targetMonthlyBottlesCut) {
+      // If no candidate is within acceptable road corridor distance, stop expanding this cluster!
+      if (bestIdx === -1 || bestDist === Infinity) {
         break;
       }
+
+      const chosen = remaining.splice(bestIdx, 1)[0];
+      clusterMembers.push(chosen);
+      accumulatedMonthlyBottles += calculateMemberMonthlyBottles(chosen);
+
+      const dSeed = calculateDistanceKm(seed.lat, seed.lng, chosen.lat, chosen.lng);
+      if (dSeed > maxRadiusKm) maxRadiusKm = dSeed;
     }
 
     const clusterDailyBottles = workingDays > 0 ? Math.round((accumulatedMonthlyBottles / workingDays) * 10) / 10 : 0;
-    const dayLabel = activeDays.size > 0 ? ` [รอบ ${Array.from(activeDays).join('/')}]` : '';
+    const dayLabel = activeDays.size > 0 ? ` [${Array.from(activeDays).join('/')}]` : '';
+
+    // Determine descriptive road name label for the cluster
+    const roadFrequency = new Map<string, number>();
+    clusterMembers.forEach(m => {
+      const info = parseAddressRoadInfo(m.address);
+      const name = info.road || info.village || info.subdistrict;
+      if (name) {
+        roadFrequency.set(name, (roadFrequency.get(name) || 0) + 1);
+      }
+    });
+
+    let dominantRoad = '';
+    let maxFreq = 0;
+    roadFrequency.forEach((count, name) => {
+      if (count > maxFreq) {
+        maxFreq = count;
+        dominantRoad = name;
+      }
+    });
+
+    const roadTitle = dominantRoad 
+      ? `กลุ่ม ${dominantRoad}${dayLabel}` 
+      : `กลุ่มจุดส่งใกล้เคียง ชุดที่ ${index + 1}${dayLabel}`;
 
     clusters.push({
       clusterId: `nearby-${truckNo}-${index + 1}`,
-      label: `กลุ่มจุดส่งใกล้เคียง ชุดที่ ${index + 1}${dayLabel} (~${maxRadiusKm.toFixed(1)} กม., ~${clusterDailyBottles} ถัง/วัน)`,
+      label: `${roadTitle} (~${maxRadiusKm.toFixed(1)} กม., ~${clusterDailyBottles} ถัง/วัน)`,
       seedMemberId: seed.id,
       seedLat: seed.lat,
       seedLng: seed.lng,
