@@ -43,6 +43,10 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const [targetRecipientTruck, setTargetRecipientTruck] = useState<string>('');
   const [selectedClusterId, setSelectedClusterId] = useState<string>('');
 
+  // Day filter & Dissolve Truck (ตัดเฉพาะรอบวัน & ยุบสาย)
+  const [selectedDeliveryDay, setSelectedDeliveryDay] = useState<string>('ALL'); // 'ALL' | 'จันทร์' | 'อังคาร' | 'พุธ' | 'พฤหัสบดี' | 'ศุกร์' | 'เสาร์'
+  const [isDissolveTruck, setIsDissolveTruck] = useState<boolean>(false); // ยุบสาย (โอนย้ายสมาชิกทั้งหมดออก)
+
   // Special conditions
   const [preserveDeliveryDays, setPreserveDeliveryDays] = useState<boolean>(true);
   const [excludeSpecialConditions, setExcludeSpecialConditions] = useState<boolean>(true);
@@ -150,14 +154,19 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         tNo,
         excess,
         workingDays,
-        { lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays }
+        { 
+          lockedMemberIds, 
+          excludeSpecialConditions, 
+          preserveDeliveryDays,
+          filterDay: selectedDeliveryDay !== 'ALL' ? selectedDeliveryDay : undefined
+        }
       );
       if (clusters.length > 0) {
         allClusters.push({ truckNo: tNo, clusters });
       }
     });
     return allClusters;
-  }, [members, selectedDonorTrucks, dailyTarget90, workingDays, lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays, rebalanceMode, baselineStats]);
+  }, [members, selectedDonorTrucks, dailyTarget90, workingDays, lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays, rebalanceMode, baselineStats, selectedDeliveryDay]);
 
   // Add new truck
   const handleAddNewTruck = (e?: React.FormEvent) => {
@@ -232,7 +241,9 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           lockedMemberIds,
           preserveDeliveryDays,
           excludeSpecialConditions,
-          newTrucks
+          newTrucks,
+          filterDay: selectedDeliveryDay !== 'ALL' ? selectedDeliveryDay : undefined,
+          isDissolveTruck: rebalanceMode === 'targeted' ? isDissolveTruck : false
         });
         setSimulationResult(result);
         setActiveTab('map');
@@ -388,34 +399,41 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     // SCENARIO 2: Targeted mode with selected donor trucks
     else if (rebalanceMode === 'targeted' && selectedDonorTrucks.length > 0) {
       const allClusterMemberIds = new Set<string>();
-      clustersByTruck.forEach(item => {
-        const topCluster = item.clusters[0];
-        if (topCluster) {
-          topCluster.members.forEach(m => allClusterMemberIds.add(m.id));
+      if (!isDissolveTruck) {
+        clustersByTruck.forEach(item => {
+          const topCluster = item.clusters[0];
+          if (topCluster) {
+            topCluster.members.forEach(m => allClusterMemberIds.add(m.id));
 
-          if (topCluster.radiusKm > 0) {
-            const circle = L.circle([topCluster.seedLat, topCluster.seedLng], {
-              radius: topCluster.radiusKm * 1000,
-              color: '#9333ea',
-              weight: 2,
-              dashArray: '5, 5',
-              fillColor: '#9333ea',
-              fillOpacity: 0.12
-            });
-            circle.addTo(map);
-            clusterCirclesRef.current.push(circle);
+            if (topCluster.radiusKm > 0) {
+              const circle = L.circle([topCluster.seedLat, topCluster.seedLng], {
+                radius: topCluster.radiusKm * 1000,
+                color: '#9333ea',
+                weight: 2,
+                dashArray: '5, 5',
+                fillColor: '#9333ea',
+                fillOpacity: 0.12
+              });
+              circle.addTo(map);
+              clusterCirclesRef.current.push(circle);
+            }
           }
-        }
-      });
+        });
+      }
 
-      const donorMembers = members.filter(m => selectedDonorTrucks.includes(m.truckNo.trim()));
+      const cleanDay = selectedDeliveryDay !== 'ALL' ? selectedDeliveryDay : undefined;
+      const donorMembers = members.filter(m => {
+        if (!selectedDonorTrucks.includes(m.truckNo.trim())) return false;
+        if (cleanDay && !m.deliveryDays.some(d => d.includes(cleanDay))) return false;
+        return true;
+      });
 
       donorMembers.forEach(m => {
         if (m.hasGps && m.lat && m.lng) {
-          const inCluster = allClusterMemberIds.has(m.id);
+          const inCluster = isDissolveTruck || allClusterMemberIds.has(m.id);
           const marker = L.circleMarker([m.lat, m.lng], {
             radius: inCluster ? 7 : 4.5,
-            fillColor: inCluster ? '#9333ea' : '#3b82f6',
+            fillColor: inCluster ? (isDissolveTruck ? '#e11d48' : '#9333ea') : '#3b82f6',
             color: '#ffffff',
             weight: inCluster ? 2 : 1,
             opacity: 1,
@@ -429,7 +447,9 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
               <span>สายรถ: <strong>${m.truckNo}</strong></span><br/>
               <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
-              <span>สถานะ: <strong style="color: ${inCluster ? '#9333ea' : '#3b82f6'};">${inCluster ? 'อยู่ในกลุ่มก้อนที่จะตัดย้าย' : 'คงอยู่ในสายเดิม'}</strong></span>
+              <span>สถานะ: <strong style="color: ${inCluster ? (isDissolveTruck ? '#e11d48' : '#9333ea') : '#3b82f6'};">
+                ${isDissolveTruck ? 'ยุบสาย (โอนย้ายทั้งหมด)' : (inCluster ? 'อยู่ในกระจุกพื้นที่ที่จะตัดย้าย' : 'คงอยู่ในสายเดิม')}
+              </strong></span>
             </div>
           `);
 
@@ -465,7 +485,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     return () => {
       clearTimeout(timer);
     };
-  }, [activeTab, simulationResult, rebalanceMode, selectedDonorTrucks, clustersByTruck, members]);
+  }, [activeTab, simulationResult, rebalanceMode, selectedDonorTrucks, clustersByTruck, members, isDissolveTruck, selectedDeliveryDay]);
 
   // Current display stats
   const currentDisplayStats = simulationResult ? simulationResult.statsAfter : baselineStats;
@@ -878,10 +898,94 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           {/* Column 2: Recipient Truck & Clusters (5 Cols) */}
           <div className="lg:col-span-5 space-y-4">
             
+            {/* Cut Options: Dissolve Truck vs Cut Overload & Delivery Day Filter */}
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                <label className="text-xs font-bold text-slate-800">
+                  2. รูปแบบการปรับสาย & รอบวันส่ง
+                </label>
+                {isDissolveTruck ? (
+                  <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                    โหมด: ยุบสายทั้งคัน
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                    โหมด: ตัดเฉพาะส่วนเกิน 90%
+                  </span>
+                )}
+              </div>
+
+              {/* Option A: ยุบสาย (Dissolve Truck) Switch */}
+              <div className="p-2.5 rounded-lg border bg-slate-50/70 border-slate-200 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isDissolveTruck}
+                      onChange={e => {
+                        setIsDissolveTruck(e.target.checked);
+                        setSimulationResult(null);
+                      }}
+                      className="rounded text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span className="text-xs font-bold text-slate-800">
+                      🚚 ยุบสายรถที่เลือก (โอนสมาชิกทั้งหมดออก)
+                    </span>
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-500 pl-6 leading-tight">
+                  {isDissolveTruck 
+                    ? '⚠️ สายรถที่เลือกด้านซ้ายจะถูกโอนย้ายสมาชิกทั้งหมดไปยังสายรถปลายทาง' 
+                    : 'ตัดเฉพาะจุดส่งที่เป็นกลุ่มก้อนใกล้กันเพื่อลดกำลังส่งให้อยู่ในเกณฑ์ 90%'}
+                </p>
+              </div>
+
+              {/* Option B: ตัดเฉพาะรอบวัน (Filter by Day of Week) */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                  <span>📅 ตัดเฉพาะรอบวัน (Day of Week):</span>
+                  <span className="text-[10px] text-slate-400">
+                    {selectedDeliveryDay === 'ALL' ? 'ตัดทุกวันในสาย' : `ตัดเฉพาะรอบวัน${selectedDeliveryDay}`}
+                  </span>
+                </label>
+
+                <div className="grid grid-cols-4 sm:grid-cols-7 gap-1">
+                  {[
+                    { label: 'ทุกวัน', val: 'ALL' },
+                    { label: 'จันทร์', val: 'จันทร์' },
+                    { label: 'อังคาร', val: 'อังคาร' },
+                    { label: 'พุธ', val: 'พุธ' },
+                    { label: 'พฤหัส', val: 'พฤหัสบดี' },
+                    { label: 'ศุกร์', val: 'ศุกร์' },
+                    { label: 'เสาร์', val: 'เสาร์' }
+                  ].map(d => {
+                    const active = selectedDeliveryDay === d.val;
+                    return (
+                      <button
+                        key={d.val}
+                        type="button"
+                        onClick={() => {
+                          setSelectedDeliveryDay(d.val);
+                          setSimulationResult(null);
+                        }}
+                        className={`py-1.5 px-1 rounded text-[11px] font-bold transition text-center ${
+                          active
+                            ? 'bg-blue-600 text-white shadow-2xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {d.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
             {/* Recipient Truck */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
               <label className="block text-xs font-bold text-slate-800 mb-1.5">
-                2. สายรถปลายทางที่จะรับโอน (Recipient Truck)
+                3. สายรถปลายทางที่จะรับโอน (Recipient Truck)
               </label>
               <select
                 value={targetRecipientTruck}
@@ -935,10 +1039,10 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
               <div className="flex items-center justify-between mb-2">
                 <label className="text-xs font-bold text-slate-800">
-                  3. กลุ่มก้อนเชิงพื้นที่ที่จะถูกตัดย้าย
+                  4. กระจุกพื้นที่ GPS ใกล้เคียงกันที่จะถูกตัดย้าย
                 </label>
                 <span className="text-[10px] text-purple-700 font-semibold bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                  กลุ่มก้อนบนแผนที่
+                  {isDissolveTruck ? 'โอนย้ายทั้งสาย' : 'เป็นกลุ่มก้อนเดียวกัน'}
                 </span>
               </div>
 

@@ -186,13 +186,14 @@ export function findSpatialClustersForTruck(
   } = options;
 
   const lockedSet = new Set(lockedMemberIds);
+  const cleanFilterDay = filterDay && filterDay !== 'ALL' ? filterDay.trim() : undefined;
 
   // Filter eligible members from donor truck
   const donorMembers = members.filter(m => {
     if (m.truckNo.trim() !== truckNo.trim()) return false;
     if (lockedSet.has(m.id)) return false;
     if (excludeSpecialConditions && hasSpecialDeliveryCondition(m)) return false;
-    if (filterDay && !m.deliveryDays.includes(filterDay)) return false;
+    if (cleanFilterDay && !m.deliveryDays.some(d => d.includes(cleanFilterDay))) return false;
     return true;
   });
 
@@ -201,7 +202,7 @@ export function findSpatialClustersForTruck(
   const targetMonthlyBottlesCut = targetDailyBottlesCut * workingDays;
   const centroid = calculateCentroid(donorMembers);
 
-  // Compute distance from centroid for each member
+  // Members with valid GPS
   const withDistance = donorMembers
     .filter(m => m.hasGps && m.lat && m.lng)
     .map(m => ({
@@ -209,12 +210,27 @@ export function findSpatialClustersForTruck(
       distFromCenter: calculateDistanceKm(centroid.lat, centroid.lng, m.lat, m.lng)
     }));
 
-  if (withDistance.length === 0) return [];
+  // If none have GPS, return all as single cluster
+  if (withDistance.length === 0) {
+    const totalBottles = donorMembers.reduce((sum, m) => sum + calculateMemberMonthlyBottles(m), 0);
+    return [{
+      clusterId: `cluster-${truckNo}-nogps`,
+      label: `กลุ่มจุดส่ง (ไม่มีพิกัด GPS, รวม ${donorMembers.length} จุด)`,
+      seedMemberId: donorMembers[0].id,
+      seedLat: centroid.lat,
+      seedLng: centroid.lng,
+      radiusKm: 0,
+      memberCount: donorMembers.length,
+      monthlyBottles: totalBottles,
+      dailyAvgBottles: workingDays > 0 ? Math.round((totalBottles / workingDays) * 10) / 10 : 0,
+      members: donorMembers
+    }];
+  }
 
-  // Sort by furthest distance from center to find boundary/edge seeds
+  // Sort by furthest distance from center to find boundary/edge seeds for clean cut off
   withDistance.sort((a, b) => b.distFromCenter - a.distFromCenter);
 
-  // Select up to 3 distinct seed points around different geographic sectors (Edge, North/East, South/West)
+  // Select distinct seed points around different geographic sectors (Edge, North/East, South/West)
   const seedCandidates: Member[] = [];
   seedCandidates.push(withDistance[0].member); // furthest edge
 
@@ -222,7 +238,7 @@ export function findSpatialClustersForTruck(
   for (let i = 1; i < withDistance.length; i++) {
     const candidate = withDistance[i].member;
     const d = calculateDistanceKm(seedCandidates[0].lat, seedCandidates[0].lng, candidate.lat, candidate.lng);
-    if (d > 3.0) { // at least 3km apart
+    if (d > 2.0) { // at least 2km apart
       seedCandidates.push(candidate);
       break;
     }
@@ -234,7 +250,7 @@ export function findSpatialClustersForTruck(
       const candidate = withDistance[i].member;
       const d1 = calculateDistanceKm(seedCandidates[0].lat, seedCandidates[0].lng, candidate.lat, candidate.lng);
       const d2 = calculateDistanceKm(seedCandidates[1].lat, seedCandidates[1].lng, candidate.lat, candidate.lng);
-      if (d1 > 2.5 && d2 > 2.5) {
+      if (d1 > 1.8 && d2 > 1.8) {
         seedCandidates.push(candidate);
         break;
       }
@@ -244,9 +260,9 @@ export function findSpatialClustersForTruck(
   const clusters: SpatialClusterCandidate[] = [];
 
   seedCandidates.forEach((seed, index) => {
-    // Sort all donor members by distance to this seed
+    // Sort all donor members strictly by GPS distance to this seed point (Nearest Neighbors first!)
     const sortedBySeed = [...donorMembers].map(m => {
-      let d = 10;
+      let d = 9999;
       if (m.hasGps && m.lat && m.lng) {
         d = calculateDistanceKm(seed.lat, seed.lng, m.lat, m.lng);
       }
@@ -271,10 +287,11 @@ export function findSpatialClustersForTruck(
     }
 
     const clusterDailyBottles = workingDays > 0 ? Math.round((accumulatedMonthlyBottles / workingDays) * 10) / 10 : 0;
+    const dayLabel = cleanFilterDay ? ` [รอบ ${cleanFilterDay}]` : '';
 
     clusters.push({
       clusterId: `cluster-${truckNo}-${index + 1}`,
-      label: `กลุ่มก้อนที่ ${index + 1} (รัศมี ${maxRadiusKm.toFixed(1)} กม., ~${clusterDailyBottles} ถัง/วัน)`,
+      label: `กระจุกพื้นที่ที่ ${index + 1}${dayLabel} (รัศมี ${maxRadiusKm.toFixed(1)} กม., ~${clusterDailyBottles} ถัง/วัน)`,
       seedMemberId: seed.id,
       seedLat: seed.lat,
       seedLng: seed.lng,
@@ -310,7 +327,9 @@ export function runRebalanceSimulation(
     lockedMemberIds = [],
     preserveDeliveryDays = true,
     excludeSpecialConditions = true,
-    newTrucks = []
+    newTrucks = [],
+    filterDay,
+    isDissolveTruck = false
   } = config;
 
   const targetDailyBottles = targetCapacityPerDay * (targetPercentage / 100);
@@ -333,7 +352,7 @@ export function runRebalanceSimulation(
     ? config.donorTrucks.map(t => t.trim()).filter(Boolean)
     : (donorTruck && donorTruck.trim() ? [donorTruck.trim()] : []);
 
-  // --- MODE A: TARGETED CLUSTER CUT FOR ONE OR MORE SELECTED TRUCKS ---
+  // --- MODE A: TARGETED CLUSTER CUT / DISSOLVE TRUCK FOR ONE OR MORE SELECTED TRUCKS ---
   if (selectedDonors.length > 0) {
     // Determine list of recipient trucks
     const recipientsList: string[] = [];
@@ -357,8 +376,46 @@ export function runRebalanceSimulation(
     }
 
     let recipientIndex = 0;
+    const cleanFilterDay = filterDay && filterDay !== 'ALL' ? filterDay.trim() : undefined;
 
     for (const cleanDonor of selectedDonors) {
+      const currentRecipient = recipientsList[recipientIndex % recipientsList.length];
+
+      // CASE 1: ยุบสาย (Dissolve Truck) -> โอนย้ายสมาชิกทั้งหมด (หรือทั้งหมดในรอบวันที่เลือก) ออกจากสายนี้
+      if (isDissolveTruck) {
+        workingMembers.forEach(m => {
+          if (m.truckNo.trim() === cleanDonor) {
+            if (lockedMemberSet.has(m.id)) return;
+            if (excludeSpecialConditions && hasSpecialDeliveryCondition(m)) return;
+            if (cleanFilterDay && !m.deliveryDays.some(d => d.includes(cleanFilterDay))) return;
+
+            const oldTruck = m.truckNo;
+            m.truckNo = currentRecipient;
+
+            const monthlyBottles = calculateMemberMonthlyBottles(m);
+            reassignedMembers.push({
+              memberId: m.id,
+              memberName: m.name,
+              oldTruck,
+              newTruck: currentRecipient,
+              monthlyBottles,
+              deliveryDays: m.deliveryDays || [],
+              address: m.address,
+              lat: m.lat,
+              lng: m.lng,
+              hasGps: m.hasGps,
+              distanceKm: 0
+            });
+          }
+        });
+
+        if (recipientsList.length > 1) {
+          recipientIndex++;
+        }
+        continue;
+      }
+
+      // CASE 2: ตัดเฉพาะยอดส่วนเกิน 90% โดยเลือกเป็นกลุ่มก้อนเชิงพื้นที่ (GPS ใกล้เคียงกัน)
       const donorStat = statsBefore.find(s => s.truckNo === cleanDonor);
       const currentDaily = donorStat ? donorStat.dailyAvgBottles : targetDailyBottles;
       const excessDaily = Math.max(10, currentDaily - targetDailyBottles);
@@ -369,7 +426,12 @@ export function runRebalanceSimulation(
         cleanDonor,
         excessDaily,
         workingDays,
-        { lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays }
+        { 
+          lockedMemberIds, 
+          excludeSpecialConditions, 
+          preserveDeliveryDays,
+          filterDay: cleanFilterDay
+        }
       );
 
       // If single truck and specific cluster selected, use that; otherwise take best cluster
@@ -379,7 +441,6 @@ export function runRebalanceSimulation(
 
       if (chosenCluster && chosenCluster.members.length > 0) {
         const movedIds = new Set(chosenCluster.members.map(m => m.id));
-        const currentRecipient = recipientsList[recipientIndex % recipientsList.length];
 
         workingMembers.forEach(m => {
           if (m.truckNo.trim() === cleanDonor && movedIds.has(m.id)) {

@@ -94,6 +94,8 @@ export interface RebalanceConfig {
   excludeSpecialConditions?: boolean; // prevent members with special conditions/warnings from moving
   newTrucks: string[]; // e.g. ["13199", "13200"]
   selectedClusterId?: string;
+  filterDay?: string; // 'ALL' or specific day: 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'
+  isDissolveTruck?: boolean; // ยุบสายนี้ทั้งคัน (โอนย้ายสมาชิกทั้งหมดออก)
 }
 
 export interface TruckVolumeStats {
