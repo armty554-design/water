@@ -9,6 +9,8 @@ import {
 } from '../types/delivery';
 import { calculateDistanceKm } from './autoSequence';
 
+export { calculateDistanceKm };
+
 /**
  * Calculates monthly bottle volume for a single member.
  * Formula considers scheduled drop quantities and frequency per month.

@@ -6,7 +6,8 @@ import {
   runRebalanceSimulation, 
   exportRebalanceToExcel,
   findSpatialClustersForTruck,
-  hasSpecialDeliveryCondition
+  calculateMemberMonthlyBottles,
+  calculateDistanceKm
 } from '../services/rebalance';
 import { saveMembers } from '../services/db';
 import { saveMembersToCloud, isFirebaseConfigured } from '../services/firebase';
@@ -27,64 +28,45 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   members,
   onMembersUpdated
 }) => {
-  // Mode: 'targeted' (เลือกตัดเฉพาะสาย - รองรับหลายคันพร้อมกัน) vs 'fleet' (เกลี่ยทั้งกองรถ)
-  const [rebalanceMode, setRebalanceMode] = useState<'targeted' | 'fleet'>('targeted');
+  // Wizard Steps: 1 = Setup Scope, 2 = Interactive Studio, 3 = Review & Finalize
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
 
   // Core Capacity Parameters
-  // 160 * 26 = 4,160 คือ 100%, 90% = 144 * 26 = 3,744
-  const [workingDays, setWorkingDays] = useState<number>(26); // กำหนดวันทำงานต่อเดือนได้อิสระ
-  const targetCapacityPerDay = 160; // 160 ถัง/วัน คือ 100%
-  const targetPercentage = 90; // 90%
+  const [workingDays, setWorkingDays] = useState<number>(26);
+  const targetCapacityPerDay = 160; // 100% capacity
+  const targetPercentage = 90; // 90% threshold
+  const dailyTarget100 = 160;
+  const dailyTarget90 = Math.round(160 * (targetPercentage / 100)); // 144
+  const monthlyTarget100 = dailyTarget100 * workingDays;
+  const monthlyTarget90 = dailyTarget90 * workingDays;
 
-  // Multi-Truck Donor Selection (เลือกตัดเบอร์ได้มากกว่า 1 คัน)
-  const [selectedDonorTrucks, setSelectedDonorTrucks] = useState<string[]>(['13201', '13205']);
+  // Step 1 Selections
+  const [targetRecipientTruck, setTargetRecipientTruck] = useState<string>('13S01');
+  const [selectedDonorTrucks, setSelectedDonorTrucks] = useState<string[]>(['13205', '13206', '13202']);
+  const [selectedDeliveryDays, setSelectedDeliveryDays] = useState<string[]>(['อังคาร', 'พฤหัสบดี', 'เสาร์']);
+  const [isDissolveTruck, setIsDissolveTruck] = useState<boolean>(false);
   const [donorSearchQuery, setDonorSearchQuery] = useState<string>('');
-  const [donorFilterTab, setDonorFilterTab] = useState<'all' | 'overload' | 'selected' | 'underload'>('all');
-  const [targetRecipientTruck, setTargetRecipientTruck] = useState<string>('');
-  const [selectedClusterId, setSelectedClusterId] = useState<string>('');
-
-  // Day filter & Dissolve Truck (ตัดเฉพาะรอบวัน & ยุบสาย)
-  // รองรับเลือกหลายวันพร้อมกันได้ เช่น ['อังคาร', 'พฤหัสบดี', 'เสาร์']
-  const [selectedDeliveryDays, setSelectedDeliveryDays] = useState<string[]>([]); // empty = ทุกวัน
-  const [isDissolveTruck, setIsDissolveTruck] = useState<boolean>(false); // ยุบสาย (โอนย้ายสมาชิกทั้งหมดออก)
-
-  // Recipient Truck Searchable Dropdown state
   const [recipientSearchQuery, setRecipientSearchQuery] = useState<string>('');
-  const [isRecipientDropdownOpen, setIsRecipientDropdownOpen] = useState<boolean>(false);
-
-  // Special conditions
-  const [preserveDeliveryDays, setPreserveDeliveryDays] = useState<boolean>(true);
-  const [excludeSpecialConditions, setExcludeSpecialConditions] = useState<boolean>(true);
-  const [lockedMemberIds, setLockedMemberIds] = useState<string[]>([]);
-
-  // Fleet management states
-  const [newTrucks, setNewTrucks] = useState<string[]>(['13199']);
   const [newTruckInput, setNewTruckInput] = useState<string>('');
-  const [lockedTrucks, setLockedTrucks] = useState<string[]>([]);
+  const [newTrucks, setNewTrucks] = useState<string[]>(['13S01', '13199']);
 
-  // Simulation execution
+  // Step 2 Interactive Staging State
+  // Map of transferred clusters/members from donor trucks to targetRecipientTruck
+  // Key: clusterId, Value: { donorTruck: string; cluster: SpatialClusterCandidate }
+  const [stagedTransfers, setStagedTransfers] = useState<Map<string, { donorTruck: string; cluster: SpatialClusterCandidate }>>(new Map());
+  const [hoveredClusterId, setHoveredClusterId] = useState<string | null>(null);
+
+  // Simulation execution / Persistence state
   const [simulationResult, setSimulationResult] = useState<RebalanceResult | null>(null);
-  const [isSimulating, setIsSimulating] = useState<boolean>(false);
   const [isApplying, setIsApplying] = useState<boolean>(false);
   const [applyProgress, setApplyProgress] = useState<string | null>(null);
   const [applySuccessMsg, setApplySuccessMsg] = useState<string | null>(null);
-
-  // View tabs
-  const [activeTab, setActiveTab] = useState<'map' | 'summary' | 'reassigned'>('map');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [filterTruck, setFilterTruck] = useState<string>('ALL');
 
   // Map refs
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
-  const clusterCirclesRef = useRef<L.Circle[]>([]);
-
-  // Calculated Capacity Targets based on Working Days (160 * workingDays = 100%)
-  const dailyTarget100 = 160; // 160 ถัง/วัน
-  const dailyTarget90 = Math.round(160 * (targetPercentage / 100)); // 144 ถัง/วัน
-  const monthlyTarget100 = dailyTarget100 * workingDays; // e.g. 160 * 26 = 4,160 ถัง/เดือน
-  const monthlyTarget90 = Math.round(dailyTarget90 * workingDays); // e.g. 144 * 26 = 3,744 ถัง/เดือน
+  const clusterCircleLayerRef = useRef<L.LayerGroup | null>(null);
 
   // 1. Baseline Truck Statistics
   const baselineStats = useMemo(() => {
@@ -97,263 +79,181 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     );
   }, [members, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
 
-  // Set default recipient to new truck or underloaded truck
-  useEffect(() => {
-    if (newTrucks.length > 0 && !targetRecipientTruck) {
-      setTargetRecipientTruck(newTrucks[0]);
-    }
-  }, [newTrucks, targetRecipientTruck]);
+  // Compute available pocket clusters for each selected donor truck
+  // Each donor can produce 1-3 contiguous pocket clusters strictly for selected delivery days
+  const donorClustersMap = useMemo(() => {
+    const map = new Map<string, SpatialClusterCandidate[]>();
 
-  // Aggregate Excess across all selected donor trucks
-  const selectedDonorsStats = useMemo(() => {
-    return baselineStats.filter(t => selectedDonorTrucks.includes(t.truckNo));
-  }, [baselineStats, selectedDonorTrucks]);
-
-  const totalExcessDaily = useMemo(() => {
-    return selectedDonorsStats.reduce((sum, t) => {
-      const excess = Math.max(0, t.dailyAvgBottles - dailyTarget90);
-      return sum + excess;
-    }, 0);
-  }, [selectedDonorsStats, dailyTarget90]);
-
-  const totalExcessMonthly = Math.round(totalExcessDaily * workingDays);
-
-  const overloadTrucksCount = useMemo(() => {
-    return baselineStats.filter(t => t.status === 'overload').length;
-  }, [baselineStats]);
-
-  const underloadTrucksCount = useMemo(() => {
-    return baselineStats.filter(t => t.status !== 'overload').length;
-  }, [baselineStats]);
-
-  // Filtered donor list based on search and tab filter
-  const filteredDonorList = useMemo(() => {
-    let list = [...baselineStats];
-
-    if (donorFilterTab === 'overload') {
-      list = list.filter(t => t.status === 'overload');
-    } else if (donorFilterTab === 'selected') {
-      list = list.filter(t => selectedDonorTrucks.includes(t.truckNo));
-    } else if (donorFilterTab === 'underload') {
-      list = list.filter(t => t.status !== 'overload');
-    }
-
-    if (donorSearchQuery.trim()) {
-      const q = donorSearchQuery.trim().toLowerCase();
-      list = list.filter(t => t.truckNo.toLowerCase().includes(q));
-    }
-
-    return list;
-  }, [baselineStats, donorFilterTab, donorSearchQuery, selectedDonorTrucks]);
-
-  // Filtered recipient trucks list with search support
-  const filteredRecipientList = useMemo(() => {
-    // 1. New trucks
-    const list: { truckNo: string; isNew: boolean; dailyAvg: number; monthlyBottles: number; memberCount: number; isOver: boolean }[] = [];
-    
-    newTrucks.forEach(nt => {
-      list.push({
-        truckNo: nt,
-        isNew: true,
-        dailyAvg: 0,
-        monthlyBottles: 0,
-        memberCount: 0,
-        isOver: false
-      });
-    });
-
-    // 2. Existing trucks excluding current donors
-    baselineStats
-      .filter(t => !selectedDonorTrucks.includes(t.truckNo))
-      .forEach(t => {
-        list.push({
-          truckNo: t.truckNo,
-          isNew: false,
-          dailyAvg: t.dailyAvgBottles,
-          monthlyBottles: t.monthlyBottles,
-          memberCount: t.memberCount,
-          isOver: t.status === 'overload'
-        });
-      });
-
-    if (recipientSearchQuery.trim()) {
-      const q = recipientSearchQuery.trim().toLowerCase();
-      return list.filter(item => item.truckNo.toLowerCase().includes(q));
-    }
-
-    return list;
-  }, [newTrucks, baselineStats, selectedDonorTrucks, recipientSearchQuery]);
-
-  // Toggle delivery day selection (supports multiple days e.g. อังคาร, พฤหัสบดี, เสาร์)
-  const handleToggleDeliveryDay = (dayVal: string) => {
-    if (dayVal === 'ALL') {
-      setSelectedDeliveryDays([]);
-    } else {
-      setSelectedDeliveryDays(prev => {
-        if (prev.includes(dayVal)) {
-          return prev.filter(d => d !== dayVal);
-        } else {
-          return [...prev, dayVal];
-        }
-      });
-    }
-    setSimulationResult(null);
-  };
-
-  // Spatial cluster pockets for selected donor trucks
-  const clustersByTruck = useMemo(() => {
-    if (rebalanceMode !== 'targeted' || selectedDonorTrucks.length === 0) return [];
-    
-    const allClusters: { truckNo: string; clusters: SpatialClusterCandidate[] }[] = [];
     selectedDonorTrucks.forEach(tNo => {
       const stat = baselineStats.find(s => s.truckNo === tNo);
-      const excess = stat ? Math.max(10, stat.dailyAvgBottles - dailyTarget90) : 30;
+      const currentDaily = stat ? stat.dailyAvgBottles : dailyTarget90;
+      const excessDaily = Math.max(10, currentDaily - dailyTarget90);
+
       const clusters = findSpatialClustersForTruck(
         members,
         tNo,
-        excess,
+        excessDaily,
         workingDays,
-        { 
-          lockedMemberIds, 
-          excludeSpecialConditions, 
-          preserveDeliveryDays,
+        {
+          preserveDeliveryDays: true,
+          excludeSpecialConditions: true,
           filterDays: selectedDeliveryDays
         }
       );
-      if (clusters.length > 0) {
-        allClusters.push({ truckNo: tNo, clusters });
-      }
+      map.set(tNo, clusters);
     });
-    return allClusters;
-  }, [members, selectedDonorTrucks, dailyTarget90, workingDays, lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays, rebalanceMode, baselineStats, selectedDeliveryDays]);
 
-  // Add new truck
+    return map;
+  }, [members, selectedDonorTrucks, baselineStats, dailyTarget90, workingDays, selectedDeliveryDays]);
+
+  // Handle Adding New Truck
   const handleAddNewTruck = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const clean = newTruckInput.trim().toUpperCase().replace(/\//g, '_');
     if (!clean) return;
-
-    const existingTrucks = new Set(members.map(m => m.truckNo.trim()));
-    if (existingTrucks.has(clean) || newTrucks.includes(clean)) {
-      alert(`มีเบอร์รถ ${clean} อยู่ในระบบแล้ว`);
-      return;
+    if (!newTrucks.includes(clean)) {
+      setNewTrucks(prev => [...prev, clean]);
     }
-
-    setNewTrucks(prev => [...prev, clean]);
     setTargetRecipientTruck(clean);
     setNewTruckInput('');
   };
 
-  const handleRemoveNewTruck = (truckToRemove: string) => {
-    setNewTrucks(prev => prev.filter(t => t !== truckToRemove));
-    if (targetRecipientTruck === truckToRemove) {
-      setTargetRecipientTruck('');
+  // Toggle delivery day selection
+  const handleToggleDay = (day: string) => {
+    if (day === 'ALL') {
+      setSelectedDeliveryDays([]);
+    } else {
+      setSelectedDeliveryDays(prev => 
+        prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]
+      );
     }
-    if (simulationResult) setSimulationResult(null);
+    setStagedTransfers(new Map());
+    setSimulationResult(null);
   };
 
-  // Toggle donor truck selection (multi-select)
-  const handleToggleDonorTruck = (truckNo: string) => {
-    setSelectedDonorTrucks(prev => {
-      if (prev.includes(truckNo)) {
-        return prev.filter(t => t !== truckNo);
+  // Toggle donor selection
+  const handleToggleDonor = (tNo: string) => {
+    setSelectedDonorTrucks(prev => 
+      prev.includes(tNo) ? prev.filter(t => t !== tNo) : [...prev, tNo]
+    );
+    setStagedTransfers(new Map());
+    setSimulationResult(null);
+  };
+
+  // Transfer an entire cluster pocket to target truck
+  const handleStageCluster = (donorTruck: string, cluster: SpatialClusterCandidate) => {
+    setStagedTransfers(prev => {
+      const next = new Map(prev);
+      if (next.has(cluster.clusterId)) {
+        next.delete(cluster.clusterId); // toggle unstage
       } else {
-        return [...prev, truckNo];
+        next.set(cluster.clusterId, { donorTruck, cluster });
+      }
+      return next;
+    });
+  };
+
+  // Quick auto-stage: pick best cluster from each donor truck
+  const handleAutoStageAll = () => {
+    const next = new Map<string, { donorTruck: string; cluster: SpatialClusterCandidate }>();
+    donorClustersMap.forEach((clusters, tNo) => {
+      if (clusters.length > 0) {
+        next.set(clusters[0].clusterId, { donorTruck: tNo, cluster: clusters[0] });
       }
     });
-    setSimulationResult(null);
+    setStagedTransfers(next);
   };
 
-  // Quick select all overloaded trucks
-  const handleSelectAllOverloaded = () => {
-    const overloaded = baselineStats.filter(t => t.status === 'overload').map(t => t.truckNo);
-    setSelectedDonorTrucks(overloaded);
-    setSimulationResult(null);
+  // Unstage all clusters
+  const handleUnstageAll = () => {
+    setStagedTransfers(new Map());
   };
 
-  const handleClearSelectedDonors = () => {
-    setSelectedDonorTrucks([]);
-    setSimulationResult(null);
-  };
+  // Real-Time Staged Metrics Computation
+  const liveStats = useMemo(() => {
+    // Collect all moved member IDs
+    const movedMemberMap = new Map<string, { member: Member; oldTruck: string; newTruck: string }>();
 
-  // Run Rebalance Simulation
-  const handleRunSimulation = () => {
-    if (rebalanceMode === 'targeted' && selectedDonorTrucks.length === 0) {
-      alert('กรุณาเลือกสายรถที่จะตัดยอดอย่างน้อย 1 คัน');
+    stagedTransfers.forEach(({ donorTruck, cluster }) => {
+      cluster.members.forEach(m => {
+        movedMemberMap.set(m.id, {
+          member: m,
+          oldTruck: donorTruck,
+          newTruck: targetRecipientTruck
+        });
+      });
+    });
+
+    // Create modified members copy
+    const modifiedMembers = members.map(m => {
+      if (movedMemberMap.has(m.id)) {
+        return { ...m, truckNo: movedMemberMap.get(m.id)!.newTruck };
+      }
+      return m;
+    });
+
+    const statsAfter = calculateTruckVolumeStats(
+      modifiedMembers,
+      workingDays,
+      targetCapacityPerDay,
+      targetPercentage,
+      Array.from(new Set([...newTrucks, targetRecipientTruck]))
+    );
+
+    const totalTransferredBottles = Array.from(stagedTransfers.values()).reduce((sum, item) => sum + item.cluster.monthlyBottles, 0);
+    const totalTransferredMembers = movedMemberMap.size;
+    const totalTransferredDaily = workingDays > 0 ? Math.round((totalTransferredBottles / workingDays) * 10) / 10 : 0;
+
+    return {
+      modifiedMembers,
+      statsAfter,
+      totalTransferredBottles,
+      totalTransferredMembers,
+      totalTransferredDaily,
+      movedMemberMap
+    };
+  }, [members, stagedTransfers, targetRecipientTruck, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
+
+  // Finalize Simulation & Advance to Step 3
+  const handleProceedToReview = () => {
+    if (stagedTransfers.size === 0 && !isDissolveTruck) {
+      alert('กรุณาเลือกโอนย้ายกระจุกพื้นที่อย่างน้อย 1 กลุ่ม');
       return;
     }
 
-    setIsSimulating(true);
-    setApplySuccessMsg(null);
+    // Convert live staged data into RebalanceResult
+    const reassignedMembers = Array.from(liveStats.movedMemberMap.values()).map(({ member, oldTruck, newTruck }) => ({
+      memberId: member.id,
+      memberName: member.name,
+      oldTruck,
+      newTruck,
+      monthlyBottles: calculateMemberMonthlyBottles(member),
+      deliveryDays: member.deliveryDays || [],
+      address: member.address,
+      lat: member.lat,
+      lng: member.lng,
+      hasGps: member.hasGps,
+      distanceKm: 0
+    }));
 
-    setTimeout(() => {
-      try {
-        const result = runRebalanceSimulation(members, {
-          workingDays,
-          targetCapacityPerDay,
-          targetPercentage,
-          donorTrucks: rebalanceMode === 'targeted' ? selectedDonorTrucks : undefined,
-          targetRecipientTruck: rebalanceMode === 'targeted' ? targetRecipientTruck : undefined,
-          targetRecipientTrucks: newTrucks,
-          selectedClusterId: (selectedDonorTrucks.length === 1 && selectedClusterId) ? selectedClusterId : undefined,
-          lockedTrucks,
-          lockedMemberIds,
-          preserveDeliveryDays,
-          excludeSpecialConditions,
-          newTrucks,
-          filterDays: selectedDeliveryDays,
-          isDissolveTruck: rebalanceMode === 'targeted' ? isDissolveTruck : false,
-          enforceMinimum90: true
-        });
-        setSimulationResult(result);
-        setActiveTab('map');
-      } catch (err) {
-        console.error('Rebalance simulation error:', err);
-        alert('เกิดข้อผิดพลาดในการคำนวณเกลี่ยสาย');
-      } finally {
-        setIsSimulating(false);
-      }
-    }, 80);
-  };
-
-  const handleReset = () => {
-    setSimulationResult(null);
-    setApplySuccessMsg(null);
-  };
-
-  const handleAvgBottlesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    const file = files[0];
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const buffer = event.target?.result as ArrayBuffer;
-        const avgMap = parseAvgBottlesFile(buffer);
-        if (avgMap.size > 0) {
-          const { updatedMembers, matchedCount } = mergeAvgBottlesIntoMembers(members, avgMap);
-          await saveMembers(updatedMembers);
-          onMembersUpdated(updatedMembers);
-          if (isFirebaseConfigured()) {
-            saveMembersToCloud(updatedMembers);
-          }
-          setApplySuccessMsg(`นำเข้า ยอดเฉลี่ย.xlsx สำเร็จ! อัปเดตข้อมูลสมาชิกตรงกัน ${matchedCount.toLocaleString()} รายการ`);
-        } else {
-          alert('ไม่พบข้อมูลยอดเฉลี่ยในไฟล์');
-        }
-      } catch (err) {
-        console.error(err);
-        alert('เกิดข้อผิดพลาดในการอ่านไฟล์ยอดเฉลี่ย');
-      }
+    const result: RebalanceResult = {
+      statsBefore: baselineStats,
+      statsAfter: liveStats.statsAfter,
+      reassignedMembers,
+      workingDays,
+      targetDailyBottles: dailyTarget90,
+      updatedMembers: liveStats.modifiedMembers
     };
-    reader.readAsArrayBuffer(file);
+
+    setSimulationResult(result);
+    setWizardStep(3);
   };
 
-  // Apply Rebalance to Database and Firestore
+  // Commit and Persist to Cloud & IndexedDB
   const handleApplyRebalance = async () => {
     if (!simulationResult) return;
     const reassignedCount = simulationResult.reassignedMembers.length;
-    if (!window.confirm(`ยืนยันการนำสายส่งใหม่ไปใช้จริง? จะมีการปรับสายรถของสมาชิกจำนวน ${reassignedCount.toLocaleString()} รายการ (โดยรอบส่งวันเดิมคงเดิม 100%)`)) {
+    if (!window.confirm(`ยืนยันการนำสายส่งใหม่ไปใช้จริง? สมาชิกจำนวน ${reassignedCount.toLocaleString()} รายการจะถูกปรับสายรถ (โดยรอบวันส่งคงเดิม 100%)`)) {
       return;
     }
 
@@ -361,21 +261,23 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     setApplyProgress('กำลังบันทึกข้อมูลลงเครื่อง...');
 
     try {
-      const updatedMembers = simulationResult.updatedMembers;
-      await saveMembers(updatedMembers);
-      onMembersUpdated(updatedMembers);
+      const updated = simulationResult.updatedMembers;
+      await saveMembers(updated);
+      onMembersUpdated(updated);
 
       if (isFirebaseConfigured()) {
-        setApplyProgress('กำลังซิงค์ข้อมูลสายส่งใหม่ขึ้น Cloud Firestore...');
-        await saveMembersToCloud(updatedMembers, (done, total) => {
+        setApplyProgress('กำลังซิงค์ขึ้น Cloud Firestore...');
+        await saveMembersToCloud(updated, (done, total) => {
           setApplyProgress(`กำลังซิงค์ขึ้น Cloud: กลุ่มสายรถที่ ${done}/${total}...`);
         });
       }
 
-      setApplySuccessMsg(`จัดตัดสายใหม่สำเร็จ! สมาชิกจำนวน ${reassignedCount.toLocaleString()} รายการ ได้รับการโอนย้ายเรียบร้อยแล้ว`);
+      setApplySuccessMsg(`จัดสายใหม่สำเร็จเรียบร้อย! ปรับปรุงสายรถให้สมาชิก ${reassignedCount.toLocaleString()} จุดส่ง`);
+      setWizardStep(1);
+      setStagedTransfers(new Map());
       setSimulationResult(null);
     } catch (err) {
-      console.error('Failed to apply rebalance:', err);
+      console.error(err);
       alert('เกิดข้อผิดพลาดในการบันทึกข้อมูล');
     } finally {
       setIsApplying(false);
@@ -383,12 +285,11 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     }
   };
 
-  // Leaflet Map Rendering
+  // Leaflet Map Rendering for Step 2 and Step 3
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
     if (!mapInstanceRef.current) {
-      // Prevent "Map container is already initialized" error
       if ((mapContainerRef.current as any)._leaflet_id) {
         (mapContainerRef.current as any)._leaflet_id = null;
       }
@@ -404,1171 +305,814 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       }).addTo(map);
 
       markersLayerRef.current = L.layerGroup().addTo(map);
+      clusterCircleLayerRef.current = L.layerGroup().addTo(map);
       mapInstanceRef.current = map;
     }
 
     const map = mapInstanceRef.current;
     const markersLayer = markersLayerRef.current;
-    if (!map || !markersLayer) return;
+    const circleLayer = clusterCircleLayerRef.current;
+    if (!map || !markersLayer || !circleLayer) return;
 
-    // Invalidate size on tab activation or resize
     const timer = setTimeout(() => {
       try {
         map.invalidateSize();
       } catch (e) {}
-    }, 100);
+    }, 150);
 
     markersLayer.clearLayers();
-    clusterCirclesRef.current.forEach(c => c.remove());
-    clusterCirclesRef.current = [];
+    circleLayer.clearLayers();
 
     const bounds = L.latLngBounds([]);
     let count = 0;
 
-    // SCENARIO 1: We have a simulation result -> Show old stops vs reassigned cluster stops
-    if (simulationResult && simulationResult.reassignedMembers.length > 0) {
-      simulationResult.reassignedMembers.forEach(m => {
-        if (m.hasGps && m.lat && m.lng) {
-          const marker = L.circleMarker([m.lat, m.lng], {
-            radius: 7,
-            fillColor: '#9333ea', // Purple for new cluster
-            color: '#ffffff',
-            weight: 2,
-            opacity: 1,
-            fillOpacity: 0.9
+    // Filter relevant members to display
+    const relevantTrucks = new Set([...selectedDonorTrucks, targetRecipientTruck]);
+    const stagedClusterIds = new Set(Array.from(stagedTransfers.keys()));
+
+    // Draw Cluster Circles
+    donorClustersMap.forEach((clusters, tNo) => {
+      clusters.forEach(c => {
+        const isStaged = stagedClusterIds.has(c.clusterId);
+        const isHovered = hoveredClusterId === c.clusterId;
+
+        if (c.radiusKm > 0) {
+          const circle = L.circle([c.seedLat, c.seedLng], {
+            radius: c.radiusKm * 1000,
+            color: isStaged ? '#9333ea' : (isHovered ? '#f59e0b' : '#3b82f6'),
+            weight: isStaged || isHovered ? 3 : 1.5,
+            dashArray: isStaged ? undefined : '4, 4',
+            fillColor: isStaged ? '#9333ea' : (isHovered ? '#f59e0b' : '#3b82f6'),
+            fillOpacity: isStaged ? 0.2 : 0.08
           });
-
-          marker.bindPopup(`
-            <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4;">
-              <strong style="color: #1e293b;">${m.memberName}</strong> (${m.memberId})<br/>
-              <span style="color: #64748b;">${m.address || '-'}</span><br/>
-              <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
-              <span style="color: #dc2626;">สายเดิม: ${m.oldTruck}</span> &rarr; 
-              <strong style="color: #16a34a;">สายใหม่: ${m.newTruck}</strong><br/>
-              <span>รอบส่ง (คงเดิม 100%): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
-              <span>ยอดส่ง: <strong>${m.monthlyBottles}</strong> ถัง/เดือน</span>
-            </div>
-          `);
-
-          markersLayer.addLayer(marker);
-          bounds.extend([m.lat, m.lng]);
-          count++;
+          circleLayer.addLayer(circle);
         }
       });
-    } 
-    // SCENARIO 2: Targeted mode with selected donor trucks
-    else if (rebalanceMode === 'targeted' && selectedDonorTrucks.length > 0) {
-      const allClusterMemberIds = new Set<string>();
-      if (!isDissolveTruck) {
-        clustersByTruck.forEach(item => {
-          const topCluster = item.clusters[0];
-          if (topCluster) {
-            topCluster.members.forEach(m => allClusterMemberIds.add(m.id));
+    });
 
-            if (topCluster.radiusKm > 0) {
-              const circle = L.circle([topCluster.seedLat, topCluster.seedLng], {
-                radius: topCluster.radiusKm * 1000,
-                color: '#9333ea',
-                weight: 2,
-                dashArray: '5, 5',
-                fillColor: '#9333ea',
-                fillOpacity: 0.12
-              });
-              circle.addTo(map);
-              clusterCirclesRef.current.push(circle);
-            }
-          }
-        });
+    // Draw Member Markers
+    members.forEach(m => {
+      if (!relevantTrucks.has(m.truckNo.trim())) return;
+      if (!m.hasGps || !m.lat || !m.lng) return;
+
+      // Filter by active delivery days if set
+      if (selectedDeliveryDays.length > 0 && !m.deliveryDays.some(d => selectedDeliveryDays.some(sd => d.includes(sd)))) {
+        return;
       }
 
-      const donorMembers = members.filter(m => {
-        if (!selectedDonorTrucks.includes(m.truckNo.trim())) return false;
-        if (selectedDeliveryDays.length > 0 && !m.deliveryDays.some(d => selectedDeliveryDays.some(sd => d.includes(sd)))) return false;
-        return true;
+      const isMoved = liveStats.movedMemberMap.has(m.id);
+      const isRecipient = m.truckNo.trim() === targetRecipientTruck;
+      
+      let fillColor = '#3b82f6'; // donor original
+      if (isMoved || isRecipient) {
+        fillColor = '#9333ea'; // purple for target recipient truck
+      }
+
+      const marker = L.circleMarker([m.lat, m.lng], {
+        radius: isMoved ? 6.5 : 4,
+        fillColor,
+        color: '#ffffff',
+        weight: isMoved ? 2 : 1,
+        opacity: 1,
+        fillOpacity: isMoved ? 0.95 : 0.65
       });
 
-      donorMembers.forEach(m => {
-        if (m.hasGps && m.lat && m.lng) {
-          const inCluster = isDissolveTruck || allClusterMemberIds.has(m.id);
-          const marker = L.circleMarker([m.lat, m.lng], {
-            radius: inCluster ? 7 : 4.5,
-            fillColor: inCluster ? (isDissolveTruck ? '#e11d48' : '#9333ea') : '#3b82f6',
-            color: '#ffffff',
-            weight: inCluster ? 2 : 1,
-            opacity: 1,
-            fillOpacity: inCluster ? 0.95 : 0.6
-          });
+      marker.bindPopup(`
+        <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4;">
+          <strong style="color: #0f172a;">${m.name}</strong> (${m.id})<br/>
+          <span style="color: #64748b;">${m.address || '-'}</span><br/>
+          <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
+          <span>สายรถ: <strong>${isMoved ? `${m.truckNo} &rarr; ${targetRecipientTruck}` : m.truckNo}</strong></span><br/>
+          <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
+          <span>ยอดส่ง: <strong>${calculateMemberMonthlyBottles(m)}</strong> ถัง/เดือน</span>
+        </div>
+      `);
 
-          marker.bindPopup(`
-            <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4;">
-              <strong style="color: #1e293b;">${m.name}</strong> (${m.id})<br/>
-              <span style="color: #64748b;">${m.address || '-'}</span><br/>
-              <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
-              <span>สายรถ: <strong>${m.truckNo}</strong></span><br/>
-              <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
-              <span>สถานะ: <strong style="color: ${inCluster ? (isDissolveTruck ? '#e11d48' : '#9333ea') : '#3b82f6'};">
-                ${isDissolveTruck ? 'ยุบสาย (โอนย้ายทั้งหมด)' : (inCluster ? 'อยู่ในกระจุกพื้นที่ที่จะตัดย้าย' : 'คงอยู่ในสายเดิม')}
-              </strong></span>
-            </div>
-          `);
-
-          markersLayer.addLayer(marker);
-          bounds.extend([m.lat, m.lng]);
-          count++;
-        }
-      });
-    }
-    // SCENARIO 3: Default backdrop (render sample members so map is never empty)
-    else {
-      const sample = members.filter(m => m.hasGps && m.lat && m.lng).slice(0, 300);
-      sample.forEach(m => {
-        const marker = L.circleMarker([m.lat, m.lng], {
-          radius: 5,
-          fillColor: '#2563eb',
-          color: '#ffffff',
-          weight: 1,
-          opacity: 0.9,
-          fillOpacity: 0.7
-        });
-        marker.bindPopup(`<strong>${m.name}</strong> (${m.id})<br/>สาย: ${m.truckNo}`);
-        markersLayer.addLayer(marker);
-        bounds.extend([m.lat, m.lng]);
-        count++;
-      });
-    }
+      markersLayer.addLayer(marker);
+      bounds.extend([m.lat, m.lng]);
+      count++;
+    });
 
     if (count > 0 && bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [40, 40] });
+      map.fitBounds(bounds, { padding: [30, 30] });
     }
 
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [activeTab, simulationResult, rebalanceMode, selectedDonorTrucks, clustersByTruck, members, isDissolveTruck, selectedDeliveryDays]);
-
-  // Current display stats
-  const currentDisplayStats = simulationResult ? simulationResult.statsAfter : baselineStats;
-  const beforeStatsMap = useMemo(() => {
-    return new Map<string, TruckVolumeStats>(baselineStats.map(s => [s.truckNo, s]));
-  }, [baselineStats]);
+    return () => clearTimeout(timer);
+  }, [wizardStep, members, selectedDonorTrucks, targetRecipientTruck, selectedDeliveryDays, stagedTransfers, hoveredClusterId, liveStats, donorClustersMap]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       
-      {/* Top Banner with Exact Calculation Formula */}
-      <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+      {/* Top Banner with Formula & Step Progress Bar */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-              ระบบจัดตัดเกลี่ยสายส่งน้ำดื่ม (Route Rebalancing)
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-bold text-slate-900 tracking-tight">
+              ระบบจัดตัดเกลี่ยสายส่งน้ำดื่ม (Interactive Route Studio)
             </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-              เกณฑ์ 160 ถัง/วัน &bull; เป้าหมาย 90%
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+              เกณฑ์ 90% ({dailyTarget90} ถัง/วัน)
             </span>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            ตัดยอดสายรถล้นเป็นกลุ่มก้อนเชิงพื้นที่บนแผนที่ (Spatial Pocket Cluster) พร้อมเงื่อนไข 
-            <strong className="text-slate-700 ml-1">สมาชิกไม่เปลี่ยนวันส่ง 100%</strong>
+          <p className="text-xs text-slate-500 mt-0.5">
+            เครื่องมือจัดเกลี่ยสายแบบกระจุกพื้นที่ GPS ใกล้เคียงกัน &bull; 
+            <strong className="text-slate-700 ml-1">สมาชิกคงรอบวันเดิม 100%</strong>
           </p>
         </div>
 
-        {/* Action Controls */}
-        <div className="flex flex-wrap items-center gap-2">
-          <label 
-            title="อัปเดตไฟล์ ยอดเฉลี่ย.xlsx เพื่อนำเข้ายอดส่งเฉลี่ยจริง"
-            className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 shadow-xs transition"
-          >
-            <span>📊 อัปเดต ยอดเฉลี่ย.xlsx</span>
-            <input 
-              type="file" 
-              accept=".xlsx,.xls" 
-              onChange={handleAvgBottlesUpload} 
-              className="hidden" 
-            />
-          </label>
-
-          {simulationResult && (
-            <>
-              <button
-                onClick={() => exportRebalanceToExcel(simulationResult)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 shadow-xs transition"
-              >
-                <span>ดาวน์โหลด Excel</span>
-              </button>
-
-              <button
-                onClick={handleApplyRebalance}
-                disabled={isApplying}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition disabled:opacity-50"
-              >
-                <span>{isApplying ? 'กำลังบันทึก...' : 'ยืนยันและนำไปใช้จริง'}</span>
-              </button>
-            </>
-          )}
-
+        {/* 3-Step Wizard Navigation Indicator */}
+        <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs">
           <button
-            onClick={handleRunSimulation}
-            disabled={isSimulating}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white shadow-xs transition disabled:opacity-50"
+            onClick={() => setWizardStep(1)}
+            className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
+              wizardStep === 1
+                ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
-            {isSimulating ? (
-              <span className="flex items-center gap-2">
-                <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                กำลังคำนวณกลุ่มก้อน...
-              </span>
-            ) : (
-              <span>
-                {rebalanceMode === 'targeted' 
-                  ? `จำลองตัดสาย (${selectedDonorTrucks.length} คันที่เลือก)` 
-                  : 'คำนวณเกลี่ยทั้งกองรถ'}
-              </span>
-            )}
+            <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">1</span>
+            <span>ตั้งโจทย์ & เลือกรถ</span>
           </button>
 
-          {(simulationResult) && (
-            <button
-              onClick={handleReset}
-              className="px-3 py-2 rounded-lg text-xs font-medium text-slate-500 hover:text-slate-800 border border-slate-200 hover:bg-slate-50 transition"
-            >
-              รีเซ็ต
-            </button>
-          )}
-        </div>
-      </div>
+          <span className="text-slate-300">&rarr;</span>
 
-      {/* Formula & Working Days Bar (160 * workingDays = 100%, 90% = 144 * workingDays) */}
-      <div className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white p-4 rounded-xl shadow-xs">
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-xs uppercase tracking-wider font-semibold text-blue-200">
-                สูตรคำนวณเกณฑ์กำลังส่งต่อเดือน
-              </span>
-              <span className="text-[10px] bg-blue-800/80 text-blue-200 px-2 py-0.5 rounded-full border border-blue-700">
-                {workingDays} วันทำงาน
-              </span>
-            </div>
-            <div className="text-sm sm:text-base font-bold flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span className="text-emerald-300">
-                100% ความจุ = 160 × {workingDays} = <strong>{monthlyTarget100.toLocaleString()}</strong> ถัง/เดือน
-              </span>
-              <span className="text-blue-300">|</span>
-              <span className="text-amber-300">
-                90% เป้าหมาย = 144 × {workingDays} = <strong>{monthlyTarget90.toLocaleString()}</strong> ถัง/เดือน
-              </span>
-            </div>
-          </div>
+          <button
+            onClick={() => setWizardStep(2)}
+            className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
+              wizardStep === 2
+                ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">2</span>
+            <span>เวิร์กสเปซจัดสาย (Board + Map)</span>
+          </button>
 
-          {/* Working Days Input Control (ให้กำหนดวันทำงานได้อิสระ) */}
-          <div className="flex items-center gap-2 bg-blue-950/70 p-2 rounded-lg border border-blue-700/60">
-            <label className="text-xs text-blue-200 whitespace-nowrap">
-              กำหนดวันทำงาน:
-            </label>
-            <input
-              type="number"
-              min={15}
-              max={31}
-              value={workingDays}
-              onChange={e => {
-                const val = Math.max(1, parseInt(e.target.value, 10) || 26);
-                setWorkingDays(val);
-                setSimulationResult(null);
-              }}
-              className="w-16 px-2 py-1 bg-blue-900 border border-blue-600 rounded text-center text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
-            <span className="text-xs text-blue-300">วัน/เดือน</span>
-          </div>
+          <span className="text-slate-300">&rarr;</span>
 
+          <button
+            onClick={() => setWizardStep(3)}
+            disabled={!simulationResult && stagedTransfers.size === 0}
+            className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
+              wizardStep === 3
+                ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
+                : 'text-slate-400 disabled:opacity-50'
+            }`}
+          >
+            <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">3</span>
+            <span>สรุป & นำไปใช้</span>
+          </button>
         </div>
       </div>
 
       {/* Progress / Success Notifications */}
       {applyProgress && (
-        <div className="p-3.5 bg-blue-50 border border-blue-200 text-blue-800 rounded-lg text-xs flex items-center gap-2">
-          <span className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+        <div className="p-3 bg-blue-50 border border-blue-200 text-blue-800 rounded-lg text-xs flex items-center gap-2">
+          <span className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
           <span>{applyProgress}</span>
         </div>
       )}
 
       {applySuccessMsg && (
-        <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs flex items-center justify-between">
+        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-emerald-700">สำเร็จ!</span>
+            <span className="font-bold text-emerald-700">✓ สำเร็จ!</span>
             <span>{applySuccessMsg}</span>
           </div>
-          <button 
-            onClick={() => setApplySuccessMsg(null)}
-            className="text-emerald-600 hover:text-emerald-900 text-xs font-bold px-1"
-          >
-            ✕
-          </button>
+          <button onClick={() => setApplySuccessMsg(null)} className="text-emerald-700 font-bold px-1">✕</button>
         </div>
       )}
 
-      {/* Mode Switcher */}
-      <div className="bg-slate-100 p-1.5 rounded-xl border border-slate-200 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => { setRebalanceMode('targeted'); setSimulationResult(null); }}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-              rebalanceMode === 'targeted'
-                ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <span>🎯 โหมด 1: เลือกตัดสายรายคัน (เลือกได้มากกว่า 1 คัน)</span>
-          </button>
-
-          <button
-            onClick={() => { setRebalanceMode('fleet'); setSimulationResult(null); }}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-              rebalanceMode === 'fleet'
-                ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <span>⚖️ โหมด 2: เกลี่ยทั้งกองรถให้อยู่ในเกณฑ์ 90%</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Multi-Truck Targeted Cut Panel */}
-      {rebalanceMode === 'targeted' ? (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+      {/* ========================================================================= */}
+      {/* STEP 1: SETUP SCOPE & GOALS                                               */}
+      {/* ========================================================================= */}
+      {wizardStep === 1 && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
           
-          {/* Column 1: Multi-Truck Donor Selector (7 Cols) */}
-          <div className="lg:col-span-7 bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-              <div>
-                <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                  <span>1. เลือกเบอร์สายรถที่จะตัดยอด</span>
-                  <span className="text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
-                    เลือกแล้ว {selectedDonorTrucks.length} คัน
-                  </span>
+          {/* Card 1: Destination Truck (สายปลายทาง / สายใหม่) */}
+          <div className="lg:col-span-5 bg-white p-5 rounded-xl border border-slate-200 shadow-xs space-y-4">
+            <div className="border-b border-slate-100 pb-2.5">
+              <span className="text-[11px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                Step 1.1: สายปลายทาง
+              </span>
+              <h2 className="text-sm font-bold text-slate-900 mt-1">
+                กำหนดสายรถที่จะรับโอน (เช่น สายใหม่ 13S01)
+              </h2>
+              <p className="text-xs text-slate-500">
+                เลือกสายเดิมที่มีอยู่ หรือสร้างเบอร์สายใหม่เพื่อมารับยอดกระจุกที่ตัดออกมา
+              </p>
+            </div>
+
+            {/* Current Selected Recipient Showcase */}
+            <div className="p-3.5 bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-xl">
+              <div className="text-xs text-purple-900 font-bold mb-1">สายปลายทางที่เลือกปัจจุบัน:</div>
+              <div className="flex items-center justify-between">
+                <div className="text-lg font-black text-purple-800">
+                  สาย {targetRecipientTruck}
+                </div>
+                {(() => {
+                  const stat = baselineStats.find(t => t.truckNo === targetRecipientTruck);
+                  if (!stat) {
+                    return <span className="px-2 py-0.5 bg-purple-200 text-purple-900 rounded text-xs font-bold">สายใหม่ (ยังไม่มียอด)</span>;
+                  }
+                  return (
+                    <span className="text-xs font-semibold text-purple-800">
+                      ปัจจุบัน: {stat.dailyAvgBottles} ถัง/วัน ({stat.memberCount} จุด)
+                    </span>
+                  );
+                })()}
+              </div>
+            </div>
+
+            {/* Quick Pick or Search Existing Trucks */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700">พิมพ์ค้นหาหรือเลือกสายปลายทาง:</label>
+              <input
+                type="text"
+                placeholder="🔍 พิมพ์เบอร์สายปลายทาง เช่น 13S01, 13199..."
+                value={recipientSearchQuery}
+                onChange={e => setRecipientSearchQuery(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-purple-500 focus:outline-none"
+              />
+
+              <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg p-1 bg-slate-50/50">
+                {/* New Trucks Options */}
+                {newTrucks.map(nt => (
+                  <div
+                    key={nt}
+                    onClick={() => setTargetRecipientTruck(nt)}
+                    className={`p-2 rounded-md cursor-pointer text-xs flex justify-between items-center transition ${
+                      targetRecipientTruck === nt ? 'bg-purple-600 text-white font-bold' : 'hover:bg-slate-100 text-slate-800'
+                    }`}
+                  >
+                    <span>สายใหม่: <strong>{nt}</strong></span>
+                    <span className="text-[10px] opacity-80">พร้อมรับยอด</span>
+                  </div>
+                ))}
+
+                {/* Filtered Existing Trucks */}
+                {baselineStats
+                  .filter(t => !selectedDonorTrucks.includes(t.truckNo))
+                  .filter(t => !recipientSearchQuery || t.truckNo.toLowerCase().includes(recipientSearchQuery.toLowerCase()))
+                  .slice(0, 15)
+                  .map(t => (
+                    <div
+                      key={t.truckNo}
+                      onClick={() => setTargetRecipientTruck(t.truckNo)}
+                      className={`p-2 rounded-md cursor-pointer text-xs flex justify-between items-center transition ${
+                        targetRecipientTruck === t.truckNo ? 'bg-purple-600 text-white font-bold' : 'hover:bg-slate-100 text-slate-800'
+                      }`}
+                    >
+                      <span>สายเดิม: <strong>{t.truckNo}</strong></span>
+                      <span className="text-[11px] opacity-80">{t.dailyAvgBottles} ถัง/วัน</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+
+            {/* Form Add New Truck */}
+            <form onSubmit={handleAddNewTruck} className="flex gap-2 pt-1 border-t border-slate-100">
+              <input
+                type="text"
+                placeholder="เพิ่มเบอร์สายใหม่ เช่น 13S01"
+                value={newTruckInput}
+                onChange={e => setNewTruckInput(e.target.value)}
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:ring-2 focus:ring-purple-500 focus:outline-none"
+              />
+              <button
+                type="submit"
+                className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold whitespace-nowrap transition"
+              >
+                + เพิ่มสาย
+              </button>
+            </form>
+
+            {/* Delivery Day Multi-Selector */}
+            <div className="pt-2 border-t border-slate-100 space-y-2">
+              <div className="flex justify-between items-center">
+                <label className="text-xs font-bold text-slate-800">
+                  Step 1.2: เลือกรอบวันที่จะตัด (เลือกได้มากกว่า 1 วัน)
                 </label>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  สามารถติ๊กเลือกได้หลายคันพร้อมกันเพื่อตัดกลุ่มก้อนที่มียอดเกิน 90% ({dailyTarget90} ถัง/วัน)
+                <span className="text-[11px] font-bold text-purple-700">
+                  {selectedDeliveryDays.length === 0 ? 'ตัดทุกวัน' : selectedDeliveryDays.join(', ')}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 sm:grid-cols-7 gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleToggleDay('ALL')}
+                  className={`py-1.5 text-xs font-bold rounded-lg transition ${
+                    selectedDeliveryDays.length === 0 ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  ทุกวัน
+                </button>
+                {['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'].map(d => {
+                  const active = selectedDeliveryDays.includes(d);
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => handleToggleDay(d)}
+                      className={`py-1.5 text-xs font-bold rounded-lg transition ${
+                        active ? 'bg-purple-600 text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {active ? '✓ ' : ''}{d.replace('พฤหัสบดี', 'พฤหัส')}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+          </div>
+
+          {/* Card 2: Source Donor Trucks (สายต้นทางที่จะตัดยอด) */}
+          <div className="lg:col-span-7 bg-white p-5 rounded-xl border border-slate-200 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+              <div>
+                <span className="text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                  Step 1.3: สายต้นทาง
+                </span>
+                <h2 className="text-sm font-bold text-slate-900 mt-1">
+                  เลือกสายรถต้นทางที่จะตัดยอด (เช่น 13205, 13206, 13202)
+                </h2>
+                <p className="text-xs text-slate-500">
+                  เลือกรถที่ยอดล้นเกิน 90% เพื่อนำกระจุกพื้นที่ GPS ใกล้เคียงกันไปเติมให้สาย {targetRecipientTruck}
                 </p>
               </div>
 
-              <div className="flex items-center gap-1.5 text-xs">
+              {/* Selected Donors Badges */}
+              <div className="text-right">
+                <span className="text-xs text-slate-400">เลือกแล้ว: </span>
+                <strong className="text-xs text-blue-700">{selectedDonorTrucks.length} คัน</strong>
+              </div>
+            </div>
+
+            {/* Quick Filter Search & Chips */}
+            <div className="space-y-2">
+              <input
+                type="text"
+                placeholder="🔍 พิมพ์ค้นหาเบอร์รถต้นทาง เช่น 13205, 13206..."
+                value={donorSearchQuery}
+                onChange={e => setDonorSearchQuery(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              />
+
+              {/* Selected Donor Badges Chips */}
+              {selectedDonorTrucks.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 p-2 bg-blue-50/70 border border-blue-200 rounded-lg items-center">
+                  <span className="text-xs font-bold text-blue-900 mr-1">สายที่เลือกตัด:</span>
+                  {selectedDonorTrucks.map(tNo => {
+                    const stat = baselineStats.find(t => t.truckNo === tNo);
+                    return (
+                      <span key={tNo} className="px-2.5 py-1 bg-blue-600 text-white rounded-md text-xs font-bold flex items-center gap-1.5 shadow-2xs">
+                        <span>สาย {tNo} ({stat ? stat.dailyAvgBottles : 0} ถัง)</span>
+                        <button onClick={() => handleToggleDonor(tNo)} className="hover:text-rose-200 text-white">✕</button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Scrollable Checkbox List of Overloaded/All Trucks */}
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg p-1 bg-white">
+                {baselineStats
+                  .filter(t => t.truckNo !== targetRecipientTruck)
+                  .filter(t => !donorSearchQuery || t.truckNo.toLowerCase().includes(donorSearchQuery.toLowerCase()))
+                  .map(t => {
+                    const isSelected = selectedDonorTrucks.includes(t.truckNo);
+                    const isOver = t.status === 'overload';
+                    const excess = Math.max(0, Math.round((t.dailyAvgBottles - dailyTarget90) * 10) / 10);
+
+                    return (
+                      <label
+                        key={t.truckNo}
+                        className={`flex items-center justify-between p-2.5 rounded-lg cursor-pointer transition text-xs ${
+                          isSelected ? 'bg-blue-50/80 border border-blue-300 font-semibold' : 'hover:bg-slate-50 border border-transparent'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleDonor(t.truckNo)}
+                            className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                          />
+                          <div>
+                            <span className="font-bold text-slate-800 text-sm">สาย {t.truckNo}</span>
+                            <span className="text-[11px] text-slate-500 ml-2">({t.memberCount} จุด &bull; {t.monthlyBottles.toLocaleString()} ถัง/ด.)</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2.5">
+                          <div className="text-right">
+                            <span className="font-bold text-slate-900">{t.dailyAvgBottles}</span>
+                            <span className="text-[10px] text-slate-400 ml-0.5">ถัง/วัน</span>
+                          </div>
+                          {isOver ? (
+                            <span className="px-2 py-0.5 bg-rose-100 text-rose-700 font-bold rounded text-[10px]">
+                              เกิน +{excess} ถัง
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-medium rounded text-[10px]">
+                              ปกติ
+                            </span>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+              </div>
+            </div>
+
+            {/* Bottom Next Step Button */}
+            <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
+              <div className="text-xs text-slate-500">
+                🔒 ล็อกยอดสายต้นทางไม่ให้ตกต่ำกว่า 90% ({dailyTarget90} ถัง/วัน) อัตโนมัติ
+              </div>
+              <button
+                type="button"
+                onClick={() => setWizardStep(2)}
+                disabled={selectedDonorTrucks.length === 0}
+                className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-2 disabled:opacity-50"
+              >
+                <span>เข้าสู่เวิร์กสเปซจัดสาย (Step 2)</span>
+                <span>&rarr;</span>
+              </button>
+            </div>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* STEP 2: INTERACTIVE ROUTE STUDIO (BOARD + LIVE MAP)                       */}
+      {/* ========================================================================= */}
+      {wizardStep === 2 && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          
+          {/* LEFT PANEL: Interactive Board (45% Width) */}
+          <div className="lg:col-span-5 space-y-4">
+            
+            {/* Action Bar Header */}
+            <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                  กระดานจัดย้ายกระจุกพื้นที่ (Live Staging)
+                </h3>
+                <span className="text-[11px] text-slate-500">
+                  โอนย้ายไปยังสาย: <strong className="text-purple-700">{targetRecipientTruck}</strong>
+                </span>
+              </div>
+              <div className="flex gap-1.5">
                 <button
                   type="button"
-                  onClick={handleSelectAllOverloaded}
-                  className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-[11px] font-semibold transition"
+                  onClick={handleAutoStageAll}
+                  className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-semibold transition"
                 >
-                  + เลือกทุกสายที่เกิน 90%
+                  ⚡ เลือกกระจุกอัตโนมัติ
                 </button>
                 <button
                   type="button"
-                  onClick={handleClearSelectedDonors}
-                  className="px-2 py-1 text-slate-500 hover:text-slate-800 rounded text-[11px] transition"
+                  onClick={handleUnstageAll}
+                  className="px-2 py-1 text-slate-500 hover:text-slate-800 rounded-lg text-xs transition"
                 >
                   ล้าง
                 </button>
               </div>
             </div>
 
-            {/* Search Input Bar & Filter Tabs */}
-            <div className="space-y-2 pt-1">
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="🔍 พิมพ์ค้นหาเบอร์รถ เช่น 13201, 131, 502..."
-                  value={donorSearchQuery}
-                  onChange={e => setDonorSearchQuery(e.target.value)}
-                  className="w-full pl-3 pr-8 py-2 border border-slate-300 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50/70 font-medium"
-                />
-                {donorSearchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setDonorSearchQuery('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full hover:bg-slate-200"
-                    title="ล้างคำค้นหา"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-
-              {/* Quick Filter Tabs */}
-              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => setDonorFilterTab('all')}
-                  className={`px-2.5 py-1 rounded-full font-semibold transition ${
-                    donorFilterTab === 'all'
-                      ? 'bg-slate-900 text-white shadow-xs'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  ทั้งหมด ({baselineStats.length})
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setDonorFilterTab('overload')}
-                  className={`px-2.5 py-1 rounded-full font-semibold transition flex items-center gap-1 ${
-                    donorFilterTab === 'overload'
-                      ? 'bg-rose-600 text-white shadow-xs'
-                      : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
-                  }`}
-                >
-                  <span>🔥 เกิน 90%</span>
-                  <span>({overloadTrucksCount})</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setDonorFilterTab('selected')}
-                  className={`px-2.5 py-1 rounded-full font-semibold transition ${
-                    donorFilterTab === 'selected'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
-                  }`}
-                >
-                  ✓ ที่เลือก ({selectedDonorTrucks.length})
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setDonorFilterTab('underload')}
-                  className={`px-2.5 py-1 rounded-full font-semibold transition ${
-                    donorFilterTab === 'underload'
-                      ? 'bg-slate-700 text-white shadow-xs'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  ปกติ/ต่ำกว่าเป้า ({underloadTrucksCount})
-                </button>
-              </div>
-            </div>
-
-            {/* Selected Trucks Badges / Chips */}
-            {selectedDonorTrucks.length > 0 && (
-              <div className="p-2.5 bg-blue-50/70 rounded-lg border border-blue-200 flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-blue-800 font-bold mr-1">
-                  เลือกตัด {selectedDonorTrucks.length} คัน:
-                </span>
-                {selectedDonorTrucks.map(tNo => (
-                  <span
-                    key={tNo}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-600 text-white rounded text-[11px] font-bold shadow-2xs"
-                  >
-                    <span>{tNo}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleDonorTruck(tNo)}
-                      className="hover:text-rose-200 text-white/80 font-bold ml-0.5 leading-none"
-                      title="ยกเลิกการเลือกสายนี้"
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Scrollable Checkbox List of Filtered Trucks */}
-            <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-50 border border-slate-100 rounded-lg p-1.5">
-              {filteredDonorList.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-400">
-                  ไม่พบเบอร์สายรถที่ตรงกับ "{donorSearchQuery}"
-                  <button
-                    type="button"
-                    onClick={() => { setDonorSearchQuery(''); setDonorFilterTab('all'); }}
-                    className="block mx-auto mt-1.5 text-blue-600 font-medium underline"
-                  >
-                    แสดงสายรถทั้งหมด
-                  </button>
+            {/* Target Truck Volume Meter Card (สายปลายทาง เช่น 13S01) */}
+            <div className="bg-gradient-to-br from-purple-900 to-indigo-900 text-white p-4 rounded-xl shadow-xs space-y-2.5">
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-pulse" />
+                  <span className="font-bold text-sm">สายปลายทาง: {targetRecipientTruck}</span>
                 </div>
-              ) : (
-                filteredDonorList.map(t => {
-                  const isSelected = selectedDonorTrucks.includes(t.truckNo);
-                  const isOver = t.status === 'overload';
-                  const excess = Math.max(0, Math.round((t.dailyAvgBottles - dailyTarget90) * 10) / 10);
-
-                  return (
-                    <label
-                      key={t.truckNo}
-                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition text-xs ${
-                        isSelected
-                          ? 'bg-blue-50/80 border border-blue-300'
-                          : 'hover:bg-slate-50 border border-transparent'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => handleToggleDonorTruck(t.truckNo)}
-                          className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
-                        />
-                        <div>
-                          <span className="font-bold text-slate-800 text-sm">
-                            สาย {t.truckNo}
-                          </span>
-                          <span className="text-[11px] text-slate-500 ml-2">
-                            ({t.memberCount} จุด &bull; {t.monthlyBottles.toLocaleString()} ถัง/ด.)
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-3">
-                        <div className="text-right">
-                          <span className="font-bold text-slate-800">{t.dailyAvgBottles}</span>
-                          <span className="text-[10px] text-slate-400 ml-0.5">ถัง/วัน</span>
-                        </div>
-
-                        {isOver ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
-                            เกิน +{excess} ถัง
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200">
-                            ปกติ
-                          </span>
-                        )}
-                      </div>
-                    </label>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Selected Donors Summary Banner */}
-            {selectedDonorTrucks.length > 0 && (
-              <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className="text-slate-500">สายที่เลือกตัด: </span>
-                  <strong className="text-slate-800">{selectedDonorTrucks.join(', ')}</strong>
-                </div>
-                <div>
-                  <span className="text-slate-600">ยอดส่วนเกินที่จะตัดออกรวม: </span>
-                  <strong className="text-rose-600 font-bold">
-                    +{totalExcessDaily} ถัง/วัน ({totalExcessMonthly.toLocaleString()} ถัง/เดือน)
-                  </strong>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Column 2: Recipient Truck & Clusters (5 Cols) */}
-          <div className="lg:col-span-5 space-y-4">
-            
-            {/* Cut Options: Dissolve Truck vs Cut Overload & Delivery Day Filter */}
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <label className="text-xs font-bold text-slate-800">
-                  2. รูปแบบการปรับสาย & รอบวันส่ง
-                </label>
-                {isDissolveTruck ? (
-                  <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
-                    โหมด: ยุบสายทั้งคัน
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                    โหมด: ตัดเฉพาะส่วนเกิน 90%
-                  </span>
-                )}
-              </div>
-
-              {/* Option A: ยุบสาย (Dissolve Truck) Switch */}
-              <div className="p-2.5 rounded-lg border bg-slate-50/70 border-slate-200 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="inline-flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={isDissolveTruck}
-                      onChange={e => {
-                        setIsDissolveTruck(e.target.checked);
-                        setSimulationResult(null);
-                      }}
-                      className="rounded text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
-                    />
-                    <span className="text-xs font-bold text-slate-800">
-                      🚚 ยุบสายรถที่เลือก (โอนสมาชิกทั้งหมดออก)
-                    </span>
-                  </label>
-                </div>
-                <p className="text-[11px] text-slate-500 pl-6 leading-tight">
-                  {isDissolveTruck 
-                    ? '⚠️ สายรถที่เลือกด้านซ้ายจะถูกโอนย้ายสมาชิกทั้งหมดไปยังสายรถปลายทาง' 
-                    : 'ตัดเฉพาะจุดส่งที่เป็นกลุ่มก้อนใกล้กันเพื่อลดกำลังส่งให้อยู่ในเกณฑ์ 90%'}
-                </p>
-              </div>
-
-              {/* Option B: ตัดเฉพาะรอบวัน (Filter by Day of Week - เลือกได้หลายวันพร้อมกัน) */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-slate-700">
-                    📅 เลือกรอบวันที่จะตัด (เลือกได้มากกว่า 1 วัน):
-                  </label>
-                  <span className="text-[10px] text-blue-600 font-semibold">
-                    {selectedDeliveryDays.length === 0 
-                      ? 'ตัดทุกวันในสาย' 
-                      : `เลือก: ${selectedDeliveryDays.join(', ')}`}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-4 sm:grid-cols-7 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleToggleDeliveryDay('ALL')}
-                    className={`py-1.5 px-1 rounded text-[11px] font-bold transition text-center ${
-                      selectedDeliveryDays.length === 0
-                        ? 'bg-slate-900 text-white shadow-2xs'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    ทุกวัน
-                  </button>
-
-                  {[
-                    { label: 'จันทร์', val: 'จันทร์' },
-                    { label: 'อังคาร', val: 'อังคาร' },
-                    { label: 'พุธ', val: 'พุธ' },
-                    { label: 'พฤหัส', val: 'พฤหัสบดี' },
-                    { label: 'ศุกร์', val: 'ศุกร์' },
-                    { label: 'เสาร์', val: 'เสาร์' }
-                  ].map(d => {
-                    const active = selectedDeliveryDays.includes(d.val);
-                    return (
-                      <button
-                        key={d.val}
-                        type="button"
-                        onClick={() => handleToggleDeliveryDay(d.val)}
-                        className={`py-1.5 px-1 rounded text-[11px] font-bold transition text-center flex items-center justify-center gap-1 ${
-                          active
-                            ? 'bg-blue-600 text-white shadow-2xs'
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                      >
-                        <span>{active ? '✓' : ''}</span>
-                        <span>{d.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Recipient Truck (Searchable Dropdown with Volume Info) */}
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-800">
-                  3. สายรถปลายทางที่จะรับโอน (Recipient Truck)
-                </label>
-                <span className="text-[10px] text-slate-500">
-                  พิมพ์ค้นหา &bull; แสดงยอดปัจจุบัน
+                <span className="text-xs font-bold text-purple-200 bg-purple-800/80 px-2 py-0.5 rounded-full">
+                  เป้าหมาย 90% = {dailyTarget90} ถัง/วัน
                 </span>
               </div>
 
-              {/* Selected Truck Card & Search Trigger */}
-              <div className="relative">
-                <div 
-                  onClick={() => setIsRecipientDropdownOpen(prev => !prev)}
-                  className="w-full p-2.5 border border-slate-300 rounded-lg cursor-pointer bg-slate-50/70 hover:bg-slate-100/70 transition flex items-center justify-between"
-                >
+              {/* Volume Progress Bar */}
+              {(() => {
+                const targetStat = liveStats.statsAfter.find(t => t.truckNo === targetRecipientTruck);
+                const currentDaily = targetStat ? targetStat.dailyAvgBottles : 0;
+                const percent = Math.min(100, Math.round((currentDaily / dailyTarget90) * 100));
+
+                return (
                   <div>
-                    {targetRecipientTruck ? (
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm text-blue-700">
-                          สาย {targetRecipientTruck}
-                        </span>
-                        {(() => {
-                          const stat = baselineStats.find(t => t.truckNo === targetRecipientTruck);
-                          if (!stat) {
-                            return (
-                              <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-semibold">
-                                สายใหม่ (ยังไม่มียอด)
-                              </span>
-                            );
-                          }
-                          return (
-                            <span className="text-xs text-slate-600">
-                              (ปัจจุบัน: <strong className="text-slate-800">{stat.dailyAvgBottles}</strong> ถัง/วัน, {stat.monthlyBottles.toLocaleString()} ถัง/ด.)
-                            </span>
-                          );
-                        })()}
+                    <div className="flex justify-between text-xs mb-1 font-bold">
+                      <span className="text-purple-200">
+                        ยอดสะสมปัจจุบัน: <strong>{currentDaily}</strong> ถัง/วัน
+                      </span>
+                      <span className="text-emerald-300">
+                        {percent}% ของเป้าหมาย 90%
+                      </span>
+                    </div>
+                    <div className="w-full bg-purple-950/80 rounded-full h-3 p-0.5 border border-purple-700/60 overflow-hidden">
+                      <div 
+                        className="bg-gradient-to-r from-purple-400 to-emerald-400 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-purple-300 mt-1">
+                      <span>โอนย้ายแล้ว: <strong>{liveStats.totalTransferredMembers}</strong> จุดส่ง</span>
+                      <span>รวม <strong>{liveStats.totalTransferredBottles.toLocaleString()}</strong> ถัง/เดือน</span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* List of Source Donor Trucks & Pocket Clusters Cards */}
+            <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
+              {selectedDonorTrucks.map(tNo => {
+                const beforeStat = baselineStats.find(t => t.truckNo === tNo);
+                const afterStat = liveStats.statsAfter.find(t => t.truckNo === tNo);
+                const clusters = donorClustersMap.get(tNo) || [];
+
+                const beforeDaily = beforeStat ? beforeStat.dailyAvgBottles : 0;
+                const afterDaily = afterStat ? afterStat.dailyAvgBottles : beforeDaily;
+                const isOver90 = afterDaily >= dailyTarget90;
+
+                return (
+                  <div key={tNo} className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs space-y-2.5">
+                    {/* Truck Header & Gauge */}
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                      <div>
+                        <span className="font-bold text-sm text-slate-900">สาย {tNo}</span>
+                        <div className="text-[11px] text-slate-500">
+                          เดิม {beforeDaily} &rarr; <strong className={isOver90 ? 'text-emerald-600' : 'text-amber-600'}>{afterDaily}</strong> ถัง/วัน
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                        afterDaily >= dailyTarget90 
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                          : 'bg-amber-50 text-amber-700 border border-amber-200'
+                      }`}>
+                        {afterDaily >= dailyTarget90 ? '✓ ไม่ต่ำกว่า 90%' : '⚠️ ใกล้เคียงเป้าหมาย'}
+                      </span>
+                    </div>
+
+                    {/* Pocket Clusters within this truck */}
+                    {clusters.length === 0 ? (
+                      <div className="text-xs text-slate-400 py-2 text-center bg-slate-50 rounded-lg">
+                        ไม่พบกระจุกจุดส่งในรอบวันที่เลือก
                       </div>
                     ) : (
-                      <span className="text-slate-400 text-xs font-medium">
-                        คลิกเพื่อเลือกสายรถปลายทาง...
-                      </span>
-                    )}
-                  </div>
-
-                  <span className="text-slate-400 text-xs">▼</span>
-                </div>
-
-                {/* Dropdown Menu with Search Input */}
-                {isRecipientDropdownOpen && (
-                  <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-slate-300 rounded-xl shadow-lg z-50 p-2 space-y-2">
-                    <div className="relative">
-                      <input
-                        type="text"
-                        placeholder="🔍 พิมพ์ค้นหาเบอร์รถปลายทาง เช่น 13S01, 13199..."
-                        value={recipientSearchQuery}
-                        onChange={e => setRecipientSearchQuery(e.target.value)}
-                        autoFocus
-                        className="w-full pl-3 pr-7 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium"
-                      />
-                      {recipientSearchQuery && (
-                        <button
-                          type="button"
-                          onClick={() => setRecipientSearchQuery('')}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold"
-                        >
-                          ✕
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Scrollable list of recipient options with real volume badges */}
-                    <div className="max-h-56 overflow-y-auto space-y-1 divide-y divide-slate-100 pr-1">
-                      {filteredRecipientList.length === 0 ? (
-                        <div className="py-4 text-center text-xs text-slate-400">
-                          ไม่พบสายรถที่ค้นหา
-                        </div>
-                      ) : (
-                        filteredRecipientList.map(item => {
-                          const isSelected = targetRecipientTruck === item.truckNo;
+                      <div className="space-y-1.5">
+                        {clusters.map((c, idx) => {
+                          const isStaged = stagedTransfers.has(c.clusterId);
                           return (
                             <div
-                              key={item.truckNo}
-                              onClick={() => {
-                                setTargetRecipientTruck(item.truckNo);
-                                setIsRecipientDropdownOpen(false);
-                                setRecipientSearchQuery('');
-                                setSimulationResult(null);
-                              }}
-                              className={`p-2 rounded-lg cursor-pointer transition flex items-center justify-between text-xs ${
-                                isSelected 
-                                  ? 'bg-blue-50 border border-blue-300 font-bold' 
-                                  : 'hover:bg-slate-50 border border-transparent'
+                              key={c.clusterId}
+                              onMouseEnter={() => setHoveredClusterId(c.clusterId)}
+                              onMouseLeave={() => setHoveredClusterId(null)}
+                              className={`p-2.5 rounded-lg border text-xs transition flex items-center justify-between ${
+                                isStaged 
+                                  ? 'bg-purple-50 border-purple-300 ring-1 ring-purple-400' 
+                                  : 'bg-slate-50 hover:bg-slate-100 border-slate-200'
                               }`}
                             >
-                              <div className="flex items-center gap-2">
-                                <span className={`font-bold ${isSelected ? 'text-blue-700' : 'text-slate-800'}`}>
-                                  สาย {item.truckNo}
-                                </span>
-                                {item.isNew && (
-                                  <span className="px-1.5 py-0.2 bg-purple-100 text-purple-700 text-[10px] rounded font-semibold">
-                                    สายใหม่
+                              <div className="space-y-0.5">
+                                <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                                  <span>กระจุกที่ {idx + 1}</span>
+                                  <span className="text-[10px] text-purple-700 bg-purple-100/70 px-1.5 py-0.2 rounded font-semibold">
+                                    รัศมี ~{c.radiusKm} กม.
                                   </span>
-                                )}
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  {c.memberCount} จุดส่ง &bull; <strong>{c.dailyAvgBottles}</strong> ถัง/วัน ({c.monthlyBottles.toLocaleString()} ถัง/ด.)
+                                </div>
                               </div>
 
-                              <div className="text-right">
-                                {item.isNew ? (
-                                  <span className="text-[11px] text-slate-400">0 ถัง/วัน</span>
-                                ) : (
-                                  <span className="text-[11px]">
-                                    <strong className={item.isOver ? 'text-rose-600' : 'text-slate-700'}>
-                                      {item.dailyAvg}
-                                    </strong>
-                                    <span className="text-slate-400 ml-0.5">ถัง/วัน</span>
-                                    <span className="text-slate-400 ml-1">({item.memberCount} จุด)</span>
-                                  </span>
-                                )}
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleStageCluster(tNo, c)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-2xs ${
+                                  isStaged
+                                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                                    : 'bg-purple-600 hover:bg-purple-700 text-white'
+                                }`}
+                              >
+                                {isStaged ? '↩ ยกเลิก' : 'โอนเข้า ➔'}
+                              </button>
                             </div>
                           );
-                        })
-                      )}
-                    </div>
+                        })}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-
-              {/* Add New Truck Form */}
-              <form onSubmit={handleAddNewTruck} className="flex gap-1.5 pt-1">
-                <input
-                  type="text"
-                  placeholder="เพิ่มสายใหม่ เช่น 13S01, 13200"
-                  value={newTruckInput}
-                  onChange={e => setNewTruckInput(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold whitespace-nowrap transition"
-                >
-                  + เพิ่มสายใหม่
-                </button>
-              </form>
-
-              {newTrucks.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {newTrucks.map(t => (
-                    <span 
-                      key={t} 
-                      onClick={() => setTargetRecipientTruck(t)}
-                      className={`cursor-pointer px-2 py-0.5 rounded text-[11px] font-semibold border flex items-center gap-1 ${
-                        targetRecipientTruck === t
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'bg-purple-100 text-purple-800 border-purple-200 hover:bg-purple-200'
-                      }`}
-                    >
-                      <span>{t}</span>
-                      <button 
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRemoveNewTruck(t);
-                        }} 
-                        className="text-white/80 hover:text-red-200 font-bold ml-1"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
+                );
+              })}
             </div>
 
-            {/* Clusters Summary */}
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-bold text-slate-800">
-                  4. กระจุกพื้นที่ GPS ใกล้เคียงกันที่จะถูกตัดย้าย
-                </label>
-                <span className="text-[10px] text-purple-700 font-semibold bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                  {isDissolveTruck ? 'โอนย้ายทั้งสาย' : 'เป็นกลุ่มก้อนเดียวกัน'}
+            {/* Proceed to Step 3 Button */}
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setWizardStep(1)}
+                className="w-1/3 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold transition"
+              >
+                &larr; ย้อนกลับ
+              </button>
+              <button
+                type="button"
+                onClick={handleProceedToReview}
+                className="w-2/3 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center justify-center gap-2"
+              >
+                <span>ตรวจสอบและสรุปผล (Step 3) &rarr;</span>
+              </button>
+            </div>
+
+          </div>
+
+          {/* RIGHT PANEL: Live Interactive Map (55% Width) */}
+          <div className="lg:col-span-7 bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-600 gap-2 border-b border-slate-100 pb-2">
+              <div className="flex items-center gap-4">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full bg-blue-500" />
+                  <span className="font-semibold">สายต้นทาง ({selectedDonorTrucks.join(', ')})</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-200" />
+                  <span className="font-bold text-purple-800">โอนย้ายเข้าสาย {targetRecipientTruck}</span>
                 </span>
               </div>
-
-              {clustersByTruck.length === 0 ? (
-                <div className="text-xs text-slate-400 py-3 text-center">
-                  เลือกสายรถด้านซ้ายเพื่อวิเคราะห์กลุ่มก้อน
-                </div>
-              ) : (
-                <div className="space-y-1.5 max-h-44 overflow-y-auto">
-                  {clustersByTruck.map(item => {
-                    const topCluster = item.clusters[0];
-                    return (
-                      <div key={item.truckNo} className="p-2 bg-purple-50/60 rounded-lg border border-purple-200 text-xs">
-                        <div className="flex justify-between font-bold text-slate-800">
-                          <span>สาย {item.truckNo}</span>
-                          <span className="text-purple-700">{topCluster.memberCount} จุดส่ง</span>
-                        </div>
-                        <div className="flex justify-between text-[11px] text-slate-500 mt-0.5">
-                          <span>รัศมีก้อน: ~{topCluster.radiusKm} กม.</span>
-                          <span>ยอดตัด: ~{topCluster.dailyAvgBottles} ถัง/วัน</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              <span className="text-[11px] text-slate-400">
+                วงกลมม่วง = ขอบเขตกระจุกพื้นที่ที่โอนย้าย
+              </span>
             </div>
 
+            <div 
+              ref={mapContainerRef}
+              className="h-[620px] w-full rounded-xl border border-slate-200 overflow-hidden relative z-0"
+            />
           </div>
 
-        </div>
-      ) : (
-        /* Fleet Mode Controls */
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              ความจุมาตรฐานต่อคัน
-            </label>
-            <div className="text-sm font-bold text-slate-800 p-2 bg-slate-50 rounded border border-slate-200">
-              160 ถัง/วัน ({monthlyTarget100.toLocaleString()} ถัง/เดือน)
-            </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              เป้าหมายตัดเกลี่ย (90%)
-            </label>
-            <div className="text-sm font-bold text-blue-700 p-2 bg-blue-50 rounded border border-blue-200">
-              144 ถัง/วัน ({monthlyTarget90.toLocaleString()} ถัง/เดือน)
-            </div>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              สายรถใหม่เพื่อรองรับยอดเกลี่ย
-            </label>
-            <form onSubmit={handleAddNewTruck} className="flex gap-1.5">
-              <input
-                type="text"
-                placeholder="เช่น 13199"
-                value={newTruckInput}
-                onChange={e => setNewTruckInput(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-800"
-              />
-              <button type="submit" className="px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold">
-                + เพิ่ม
-              </button>
-            </form>
-          </div>
         </div>
       )}
 
-      {/* Special Constraints Bar (สมาชิกไม่เปลี่ยนวัน / ห้ามย้ายรอบ) */}
-      <div className="bg-amber-50/60 border border-amber-200/80 p-3.5 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-2 text-amber-900 font-semibold">
-          <span className="text-base">🛡️</span>
-          <span>เงื่อนไขพิเศษการตัดสาย:</span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-4 text-slate-700">
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={preserveDeliveryDays}
-              onChange={e => setPreserveDeliveryDays(e.target.checked)}
-              className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4"
-            />
-            <span className="font-semibold text-slate-800">
-              สมาชิกไม่เปลี่ยนวัน (คงรอบส่งวันเดิม 100%)
-            </span>
-          </label>
-
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={excludeSpecialConditions}
-              onChange={e => setExcludeSpecialConditions(e.target.checked)}
-              className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4"
-            />
-            <span>
-              ห้ามย้ายรอบสมาชิกเงื่อนไขพิเศษ (โทรสั่งก่อนหมด / รอบเว้นรอบ / เฝ้าระวัง)
-            </span>
-          </label>
-        </div>
-      </div>
-
-      {/* Tabs & Visualizations */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-        
-        <div className="p-3 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setActiveTab('map')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                activeTab === 'map' ? 'bg-white text-blue-700 shadow-xs border border-slate-200' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <span>🗺️ แผนที่กลุ่มก้อนที่เลือกตัด</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('summary')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                activeTab === 'summary' ? 'bg-white text-blue-700 shadow-xs border border-slate-200' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              ตารางเปรียบเทียบทุกสายรถ ({currentDisplayStats.length})
-            </button>
-
-            <button
-              onClick={() => setActiveTab('reassigned')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                activeTab === 'reassigned' ? 'bg-white text-blue-700 shadow-xs border border-slate-200' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              จุดส่งที่ตัดย้าย ({simulationResult ? simulationResult.reassignedMembers.length : 0})
-            </button>
-          </div>
-
-          <div className="text-xs text-slate-500 hidden sm:block">
-            {simulationResult ? (
-              <span className="text-emerald-700 font-bold">
-                ✓ จำลองตัดสายแล้ว ({simulationResult.reassignedMembers.length} จุดส่ง)
+      {/* ========================================================================= */}
+      {/* STEP 3: REVIEW & FINALIZE (BEFORE VS AFTER TABLE & SAVE)                  */}
+      {/* ========================================================================= */}
+      {wizardStep === 3 && simulationResult && (
+        <div className="space-y-4">
+          
+          {/* Header Summary */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+              <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                Step 3: ตรวจสอบผลลัพธ์
               </span>
-            ) : (
-              <span>กดปุ่ม <strong>"จำลองตัดสาย"</strong> ด้านบนเพื่อประมวลผล</span>
-            )}
-          </div>
-        </div>
-
-        {/* Tab 1: Map View (Always retained in DOM to preserve Leaflet instance) */}
-        <div className={activeTab === 'map' ? 'p-4 block' : 'hidden'}>
-          <div className="mb-2 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 text-slate-600">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-3 h-3 rounded-full bg-blue-500" />
-                <span>สายเดิมที่เลือก ({selectedDonorTrucks.join(', ') || 'ไม่มี'})</span>
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-200" />
-                <span className="font-bold text-purple-800">
-                  กลุ่มก้อนเชิงพื้นที่ที่จะตัดย้าย
-                </span>
-              </span>
+              <h2 className="text-base font-bold text-slate-900 mt-1">
+                สรุปผลการจัดเกลี่ยสายใหม่ (ก่อน vs หลัง)
+              </h2>
+              <p className="text-xs text-slate-500">
+                โอนย้ายสมาชิกทั้งหมด <strong>{simulationResult.reassignedMembers.length}</strong> จุดส่ง 
+                เข้าสาย <strong>{targetRecipientTruck}</strong> โดยคงรอบวันส่งเดิม 100%
+              </p>
             </div>
-            <span className="text-[11px] text-slate-400">
-              วงกลมประสีม่วงแสดงขอบเขตกลุ่มก้อนเชิงพื้นที่ (รัศมีเป็นกลุ่มก้อนชัดเจน)
-            </span>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setWizardStep(2)}
+                className="px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold transition"
+              >
+                &larr; ปรับแต่งต่อ
+              </button>
+
+              <button
+                type="button"
+                onClick={() => exportRebalanceToExcel(simulationResult)}
+                className="px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+              >
+                <span>📥 ดาวน์โหลด Excel สรุปสาย</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleApplyRebalance}
+                disabled={isApplying}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <span>{isApplying ? 'กำลังบันทึก...' : '💾 ยืนยันและนำไปใช้จริง'}</span>
+              </button>
+            </div>
           </div>
 
-          <div 
-            ref={mapContainerRef} 
-            className="h-[520px] w-full rounded-lg border border-slate-200 overflow-hidden relative z-0" 
-          />
-        </div>
-
-        {/* Tab 2: Summary Table */}
-        {activeTab === 'summary' && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
-                  <th className="py-2.5 px-3">เบอร์รถ</th>
-                  <th className="py-2.5 px-3 text-right">จุดส่ง (จุด)</th>
-                  <th className="py-2.5 px-3 text-right">ยอดถังต่อเดือน</th>
-                  <th className="py-2.5 px-3 text-right">ยอดส่งเฉลี่ยต่อวัน</th>
-                  <th className="py-2.5 px-3 text-center">สัดส่วนต่อความจุ (ฐาน 160 ถัง)</th>
-                  <th className="py-2.5 px-3 text-center">สถานะเป้าหมาย 90% ({dailyTarget90} ถัง)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {currentDisplayStats.map(truck => {
-                  const before = beforeStatsMap.get(truck.truckNo);
-                  const memberDiff = before ? truck.memberCount - before.memberCount : 0;
-                  const bottleDiff = before ? truck.monthlyBottles - before.monthlyBottles : 0;
-
-                  return (
-                    <tr key={truck.truckNo} className="hover:bg-slate-50 transition">
-                      <td className="py-2.5 px-3 font-semibold text-slate-900">
-                        <span>{truck.truckNo}</span>
-                        {truck.isNew && (
-                          <span className="ml-1.5 px-1.5 py-0.2 bg-purple-100 text-purple-700 text-[10px] rounded font-medium">
-                            สายใหม่
-                          </span>
-                        )}
-                        {selectedDonorTrucks.includes(truck.truckNo) && (
-                          <span className="ml-1.5 px-1.5 py-0.2 bg-blue-100 text-blue-700 text-[10px] rounded font-medium">
-                            สายที่เลือกตัด
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3 text-right text-slate-800">
-                        <span>{truck.memberCount.toLocaleString()}</span>
-                        {memberDiff !== 0 && (
-                          <span className={`text-[10px] ml-1 font-semibold ${memberDiff > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                            ({memberDiff > 0 ? `+${memberDiff}` : memberDiff})
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3 text-right text-slate-800">
-                        <span>{truck.monthlyBottles.toLocaleString()}</span>
-                        {bottleDiff !== 0 && (
-                          <span className={`text-[10px] ml-1 font-semibold ${bottleDiff > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                            ({bottleDiff > 0 ? `+${bottleDiff}` : bottleDiff})
-                          </span>
-                        )}
-                        <span className="text-[10px] text-slate-400 ml-1">ถัง</span>
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-medium text-slate-900">
-                        <span className="text-sm font-bold text-blue-700">{truck.dailyAvgBottles}</span>
-                        <span className="text-[10px] text-slate-400 ml-1">ถัง/วัน</span>
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <div className="w-24 mx-auto">
-                          <div className="flex items-center justify-between text-[10px] font-semibold mb-0.5">
-                            <span className="text-slate-600">{truck.utilizationRate}%</span>
-                            <span className="text-slate-400">/ 100%</span>
-                          </div>
-                          <div className="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
-                            <div 
-                              className={`h-full rounded-full ${
-                                truck.status === 'optimal' ? 'bg-emerald-500' :
-                                truck.status === 'overload' ? 'bg-amber-500' : 'bg-blue-400'
-                              }`}
-                              style={{ width: `${Math.min(100, truck.utilizationRate)}%` }}
-                            />
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        {truck.status === 'optimal' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                            ตรงเป้า 90%
-                          </span>
-                        ) : truck.status === 'overload' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
-                            สูงกว่าเป้า
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-800 border border-blue-200">
-                            ต่ำกว่าเป้า
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Tab 3: Reassigned Members */}
-        {activeTab === 'reassigned' && (
-          <div className="overflow-x-auto">
-            {!simulationResult || simulationResult.reassignedMembers.length === 0 ? (
-              <div className="py-16 text-center text-xs text-slate-500">
-                ยังไม่มีรายการจุดส่งที่ถูกตัดย้าย
-                <div className="mt-2">
-                  เลือกสายรถที่ต้องการตัดด้านบน แล้วกด <strong>"จำลองตัดสาย"</strong>
-                </div>
-              </div>
-            ) : (
-              <table className="w-full text-left border-collapse text-xs">
+          {/* Before vs After Comparison Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-3 bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-700">
+              ตารางเปรียบเทียบกำลังส่งของสายรถที่เกี่ยวข้อง
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
                 <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
-                    <th className="py-2.5 px-3">รหัสสมาชิก</th>
-                    <th className="py-2.5 px-3">ชื่อ-นามสกุล</th>
-                    <th className="py-2.5 px-3">ที่อยู่จัดส่ง</th>
-                    <th className="py-2.5 px-3">รอบส่ง (คงเดิม 100%)</th>
-                    <th className="py-2.5 px-3 text-right">ยอดถัง (ถัง/เดือน)</th>
-                    <th className="py-2.5 px-3 text-center">สายเดิม</th>
-                    <th className="py-2.5 px-3 text-center">สายใหม่</th>
-                    <th className="py-2.5 px-3 text-center">ระยะจากศูนย์กลาง</th>
+                  <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-bold">
+                    <th className="py-2.5 px-3">เบอร์สายรถ</th>
+                    <th className="py-2.5 px-3">บทบาท</th>
+                    <th className="py-2.5 px-3 text-right">จุดส่งเดิม</th>
+                    <th className="py-2.5 px-3 text-right">จุดส่งใหม่</th>
+                    <th className="py-2.5 px-3 text-right">เปลี่ยนแปลง</th>
+                    <th className="py-2.5 px-3 text-right">ยอดเดิม (ถัง/วัน)</th>
+                    <th className="py-2.5 px-3 text-right">ยอดใหม่ (ถัง/วัน)</th>
+                    <th className="py-2.5 px-3 text-center">สัดส่วนต่อเกณฑ์ 90% ({dailyTarget90} ถัง)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {simulationResult.statsAfter
+                    .filter(t => selectedDonorTrucks.includes(t.truckNo) || t.truckNo === targetRecipientTruck)
+                    .map(after => {
+                      const before = simulationResult.statsBefore.find(s => s.truckNo === after.truckNo) || {
+                        memberCount: 0,
+                        monthlyBottles: 0,
+                        dailyAvgBottles: 0
+                      };
+                      const isRecipient = after.truckNo === targetRecipientTruck;
+                      const diffMembers = after.memberCount - before.memberCount;
+
+                      return (
+                        <tr key={after.truckNo} className={isRecipient ? 'bg-purple-50/60 font-semibold' : 'hover:bg-slate-50'}>
+                          <td className="py-2.5 px-3 font-bold text-slate-900">
+                            สาย {after.truckNo}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {isRecipient ? (
+                              <span className="px-2 py-0.5 bg-purple-200 text-purple-900 rounded text-[10px] font-bold">สายรับโอน</span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] font-bold">สายต้นทาง</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-slate-500">{before.memberCount} จุด</td>
+                          <td className="py-2.5 px-3 text-right font-bold text-slate-900">{after.memberCount} จุด</td>
+                          <td className="py-2.5 px-3 text-right">
+                            <span className={diffMembers > 0 ? 'text-purple-700 font-bold' : (diffMembers < 0 ? 'text-blue-700 font-bold' : 'text-slate-400')}>
+                              {diffMembers > 0 ? `+${diffMembers}` : diffMembers}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-slate-500">{before.dailyAvgBottles}</td>
+                          <td className="py-2.5 px-3 text-right font-black text-slate-900">{after.dailyAvgBottles}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              after.dailyAvgBottles >= dailyTarget90 
+                                ? 'bg-emerald-100 text-emerald-800' 
+                                : 'bg-amber-100 text-amber-800'
+                            }`}>
+                              {after.dailyAvgBottles >= dailyTarget90 ? '✓ ผ่านเกณฑ์ 90%' : 'ต่ำกว่าเป้าหมาย'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Reassigned Members Details Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-3 bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-700 flex justify-between items-center">
+              <span>รายชื่อจุดส่งที่ย้ายสาย ({simulationResult.reassignedMembers.length} รายการ)</span>
+              <span className="text-[11px] text-slate-400 font-normal">รอบส่งคงเดิม 100%</span>
+            </div>
+            <div className="max-h-80 overflow-y-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0 bg-slate-100 border-b border-slate-200 font-semibold text-slate-600">
+                  <tr>
+                    <th className="py-2 px-3">รหัส</th>
+                    <th className="py-2 px-3">ชื่อสมาชิก</th>
+                    <th className="py-2 px-3">ที่อยู่</th>
+                    <th className="py-2 px-3">รอบส่ง</th>
+                    <th className="py-2 px-3 text-right">ยอด (ถัง/ด.)</th>
+                    <th className="py-2 px-3 text-center">การย้ายสาย</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {simulationResult.reassignedMembers.map(m => (
-                    <tr key={m.memberId} className="hover:bg-slate-50 transition">
-                      <td className="py-2.5 px-3 font-semibold text-slate-900 font-mono">
-                        {m.memberId}
-                      </td>
-                      <td className="py-2.5 px-3 font-medium text-slate-800">
-                        {m.memberName}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-600 max-w-xs truncate" title={m.address}>
-                        {m.address || '-'}
-                      </td>
-                      <td className="py-2.5 px-3 font-semibold text-emerald-700">
-                        {m.deliveryDays.join(', ') || '-'}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-semibold text-blue-700">
-                        {m.monthlyBottles}
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-rose-600 font-medium">
-                        {m.oldTruck}
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-emerald-600 font-bold">
-                        {m.newTruck}
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-slate-500">
-                        {m.distanceKm !== undefined ? `${m.distanceKm} กม.` : '-'}
+                    <tr key={m.memberId} className="hover:bg-slate-50">
+                      <td className="py-1.5 px-3 font-mono font-bold text-slate-700">{m.memberId}</td>
+                      <td className="py-1.5 px-3 font-semibold text-slate-800">{m.memberName}</td>
+                      <td className="py-1.5 px-3 text-slate-500 truncate max-w-xs">{m.address || '-'}</td>
+                      <td className="py-1.5 px-3 font-bold text-purple-700">{m.deliveryDays.join(', ')}</td>
+                      <td className="py-1.5 px-3 text-right font-bold text-slate-900">{m.monthlyBottles}</td>
+                      <td className="py-1.5 px-3 text-center">
+                        <span className="text-blue-600 font-bold">{m.oldTruck}</span> &rarr; <span className="text-purple-700 font-bold">{m.newTruck}</span>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
+            </div>
           </div>
-        )}
 
-      </div>
+        </div>
+      )}
 
     </div>
   );
