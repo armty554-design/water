@@ -50,11 +50,11 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const [newTruckInput, setNewTruckInput] = useState<string>('');
   const [newTrucks, setNewTrucks] = useState<string[]>(['13S01', '13199']);
 
-  // Step 2 Interactive Staging State
-  // Map of transferred clusters/members from donor trucks to targetRecipientTruck
+  // Step 2 Interactive Staging State: Map of transferred nearby groups/stops to targetRecipientTruck
   // Key: clusterId, Value: { donorTruck: string; cluster: SpatialClusterCandidate }
   const [stagedTransfers, setStagedTransfers] = useState<Map<string, { donorTruck: string; cluster: SpatialClusterCandidate }>>(new Map());
-  const [hoveredClusterId, setHoveredClusterId] = useState<string | null>(null);
+  const [hoveredNearbyId, setHoveredNearbyId] = useState<string | null>(null);
+  const [selectedIndividualMemberIds, setSelectedIndividualMemberIds] = useState<Set<string>>(new Set());
 
   // Simulation execution / Persistence state
   const [simulationResult, setSimulationResult] = useState<RebalanceResult | null>(null);
@@ -140,20 +140,33 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     setSimulationResult(null);
   };
 
-  // Transfer an entire cluster pocket to target truck
-  const handleStageCluster = (donorTruck: string, cluster: SpatialClusterCandidate) => {
+  // Transfer an entire group of nearby stops to target truck
+  const handleStageNearbyGroup = (donorTruck: string, group: SpatialClusterCandidate) => {
     setStagedTransfers(prev => {
       const next = new Map(prev);
-      if (next.has(cluster.clusterId)) {
-        next.delete(cluster.clusterId); // toggle unstage
+      if (next.has(group.clusterId)) {
+        next.delete(group.clusterId);
       } else {
-        next.set(cluster.clusterId, { donorTruck, cluster });
+        next.set(group.clusterId, { donorTruck, cluster: group });
       }
       return next;
     });
   };
 
-  // Quick auto-stage: pick best cluster from each donor truck
+  // Toggle individual stop transfer directly
+  const handleToggleIndividualStop = (member: Member) => {
+    setSelectedIndividualMemberIds(prev => {
+      const next = new Set(prev);
+      if (next.has(member.id)) {
+        next.delete(member.id);
+      } else {
+        next.add(member.id);
+      }
+      return next;
+    });
+  };
+
+  // Quick auto-stage: pick best contiguous nearby stops from each donor truck
   const handleAutoStageAll = () => {
     const next = new Map<string, { donorTruck: string; cluster: SpatialClusterCandidate }>();
     donorClustersMap.forEach((clusters, tNo) => {
@@ -164,9 +177,10 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     setStagedTransfers(next);
   };
 
-  // Unstage all clusters
+  // Unstage all
   const handleUnstageAll = () => {
     setStagedTransfers(new Map());
+    setSelectedIndividualMemberIds(new Set());
   };
 
   // Real-Time Staged Metrics Computation
@@ -174,6 +188,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     // Collect all moved member IDs
     const movedMemberMap = new Map<string, { member: Member; oldTruck: string; newTruck: string }>();
 
+    // 1. From staged nearby groups
     stagedTransfers.forEach(({ donorTruck, cluster }) => {
       cluster.members.forEach(m => {
         movedMemberMap.set(m.id, {
@@ -182,6 +197,18 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           newTruck: targetRecipientTruck
         });
       });
+    });
+
+    // 2. From individual clicked stops
+    selectedIndividualMemberIds.forEach(id => {
+      const m = members.find(mem => mem.id === id);
+      if (m) {
+        movedMemberMap.set(m.id, {
+          member: m,
+          oldTruck: m.truckNo.trim(),
+          newTruck: targetRecipientTruck
+        });
+      }
     });
 
     // Create modified members copy
@@ -200,7 +227,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       Array.from(new Set([...newTrucks, targetRecipientTruck]))
     );
 
-    const totalTransferredBottles = Array.from(stagedTransfers.values()).reduce((sum, item) => sum + item.cluster.monthlyBottles, 0);
+    const totalTransferredBottles = Array.from(movedMemberMap.values()).reduce((sum, item) => sum + calculateMemberMonthlyBottles(item.member), 0);
     const totalTransferredMembers = movedMemberMap.size;
     const totalTransferredDaily = workingDays > 0 ? Math.round((totalTransferredBottles / workingDays) * 10) / 10 : 0;
 
@@ -212,7 +239,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       totalTransferredDaily,
       movedMemberMap
     };
-  }, [members, stagedTransfers, targetRecipientTruck, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
+  }, [members, stagedTransfers, selectedIndividualMemberIds, targetRecipientTruck, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
 
   // Finalize Simulation & Advance to Step 3
   const handleProceedToReview = () => {
@@ -334,7 +361,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     donorClustersMap.forEach((clusters, tNo) => {
       clusters.forEach(c => {
         const isStaged = stagedClusterIds.has(c.clusterId);
-        const isHovered = hoveredClusterId === c.clusterId;
+        const isHovered = hoveredNearbyId === c.clusterId;
 
         if (c.radiusKm > 0) {
           const circle = L.circle([c.seedLat, c.seedLng], {
@@ -378,15 +405,25 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       });
 
       marker.bindPopup(`
-        <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4;">
+        <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4; min-width: 180px;">
           <strong style="color: #0f172a;">${m.name}</strong> (${m.id})<br/>
-          <span style="color: #64748b;">${m.address || '-'}</span><br/>
+          <span style="color: #64748b; font-size: 11px;">${m.address || '-'}</span><br/>
           <hr style="margin: 4px 0; border: none; border-top: 1px solid #e2e8f0;"/>
           <span>สายรถ: <strong>${isMoved ? `${m.truckNo} &rarr; ${targetRecipientTruck}` : m.truckNo}</strong></span><br/>
           <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
-          <span>ยอดส่ง: <strong>${calculateMemberMonthlyBottles(m)}</strong> ถัง/เดือน</span>
+          <span>ยอดส่ง: <strong>${calculateMemberMonthlyBottles(m)}</strong> ถัง/เดือน</span><br/>
+          <div style="margin-top: 6px; text-align: center;">
+            <span style="display: inline-block; padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 11px; background: ${isMoved ? '#f3e8ff' : '#eff6ff'}; color: ${isMoved ? '#7e22ce' : '#1d4ed8'}; border: 1px solid ${isMoved ? '#d8b4fe' : '#bfdbfe'};">
+              ${isMoved ? '✓ ย้ายเข้าสาย ' + targetRecipientTruck + ' แล้ว' : 'อยู่ในสายเดิม ' + m.truckNo}
+            </span>
+          </div>
         </div>
       `);
+
+      // Clicking a marker directly toggles its transfer!
+      marker.on('click', () => {
+        handleToggleIndividualStop(m);
+      });
 
       markersLayer.addLayer(marker);
       bounds.extend([m.lat, m.lng]);
@@ -398,7 +435,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     }
 
     return () => clearTimeout(timer);
-  }, [wizardStep, members, selectedDonorTrucks, targetRecipientTruck, selectedDeliveryDays, stagedTransfers, hoveredClusterId, liveStats, donorClustersMap]);
+  }, [wizardStep, members, selectedDonorTrucks, targetRecipientTruck, selectedDeliveryDays, stagedTransfers, selectedIndividualMemberIds, hoveredNearbyId, liveStats, donorClustersMap]);
 
   return (
     <div className="space-y-4">
@@ -827,7 +864,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               })()}
             </div>
 
-            {/* List of Source Donor Trucks & Pocket Clusters Cards */}
+            {/* List of Source Donor Trucks & Nearby Stops Groups Cards */}
             <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
               {selectedDonorTrucks.map(tNo => {
                 const beforeStat = baselineStats.find(t => t.truckNo === tNo);
@@ -857,10 +894,10 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                       </span>
                     </div>
 
-                    {/* Pocket Clusters within this truck */}
+                    {/* Nearby Stops Groups within this truck */}
                     {clusters.length === 0 ? (
                       <div className="text-xs text-slate-400 py-2 text-center bg-slate-50 rounded-lg">
-                        ไม่พบกระจุกจุดส่งในรอบวันที่เลือก
+                        ไม่พบจุดส่งในรอบวันที่เลือก
                       </div>
                     ) : (
                       <div className="space-y-1.5">
@@ -869,8 +906,8 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                           return (
                             <div
                               key={c.clusterId}
-                              onMouseEnter={() => setHoveredClusterId(c.clusterId)}
-                              onMouseLeave={() => setHoveredClusterId(null)}
+                              onMouseEnter={() => setHoveredNearbyId(c.clusterId)}
+                              onMouseLeave={() => setHoveredNearbyId(null)}
                               className={`p-2.5 rounded-lg border text-xs transition flex items-center justify-between ${
                                 isStaged 
                                   ? 'bg-purple-50 border-purple-300 ring-1 ring-purple-400' 
@@ -879,9 +916,9 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                             >
                               <div className="space-y-0.5">
                                 <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                                  <span>กระจุกที่ {idx + 1}</span>
+                                  <span>กลุ่มจุดใกล้เคียง ชุดที่ {idx + 1}</span>
                                   <span className="text-[10px] text-purple-700 bg-purple-100/70 px-1.5 py-0.2 rounded font-semibold">
-                                    รัศมี ~{c.radiusKm} กม.
+                                    ระยะ ~{c.radiusKm} กม.
                                   </span>
                                 </div>
                                 <div className="text-[11px] text-slate-500">
@@ -891,7 +928,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
                               <button
                                 type="button"
-                                onClick={() => handleStageCluster(tNo, c)}
+                                onClick={() => handleStageNearbyGroup(tNo, c)}
                                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-2xs ${
                                   isStaged
                                     ? 'bg-rose-600 hover:bg-rose-700 text-white'
@@ -943,8 +980,8 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                   <span className="font-bold text-purple-800">โอนย้ายเข้าสาย {targetRecipientTruck}</span>
                 </span>
               </div>
-              <span className="text-[11px] text-slate-400">
-                วงกลมม่วง = ขอบเขตกระจุกพื้นที่ที่โอนย้าย
+              <span className="text-[11px] text-slate-500 font-medium bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
+                💡 คลิกที่หมุดบนแผนที่เพื่อเลือก/ยกเลิกจุดส่งใกล้เคียงรายจุดได้ทันที
               </span>
             </div>
 

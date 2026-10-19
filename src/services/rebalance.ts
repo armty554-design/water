@@ -224,12 +224,12 @@ export function findSpatialClustersForTruck(
       distFromCenter: calculateDistanceKm(centroid.lat, centroid.lng, m.lat, m.lng)
     }));
 
-  // If none have GPS, return all as single cluster
+  // If none have GPS, return all as single group
   if (withDistance.length === 0) {
     const totalBottles = donorMembers.reduce((sum, m) => sum + calculateMemberMonthlyBottles(m), 0);
     return [{
-      clusterId: `cluster-${truckNo}-nogps`,
-      label: `กลุ่มจุดส่ง (ไม่มีพิกัด GPS, รวม ${donorMembers.length} จุด)`,
+      clusterId: `nearby-${truckNo}-nogps`,
+      label: `จุดส่งใกล้เคียง (ไม่มีพิกัด GPS, รวม ${donorMembers.length} จุด)`,
       seedMemberId: donorMembers[0].id,
       seedLat: centroid.lat,
       seedLng: centroid.lng,
@@ -304,8 +304,8 @@ export function findSpatialClustersForTruck(
     const dayLabel = activeDays.size > 0 ? ` [รอบ ${Array.from(activeDays).join('/')}]` : '';
 
     clusters.push({
-      clusterId: `cluster-${truckNo}-${index + 1}`,
-      label: `กระจุกพื้นที่ที่ ${index + 1}${dayLabel} (รัศมี ${maxRadiusKm.toFixed(1)} กม., ~${clusterDailyBottles} ถัง/วัน)`,
+      clusterId: `nearby-${truckNo}-${index + 1}`,
+      label: `กลุ่มจุดส่งใกล้เคียง ชุดที่ ${index + 1}${dayLabel} (~${maxRadiusKm.toFixed(1)} กม., ~${clusterDailyBottles} ถัง/วัน)`,
       seedMemberId: seed.id,
       seedLat: seed.lat,
       seedLng: seed.lng,
