@@ -44,8 +44,13 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const [selectedClusterId, setSelectedClusterId] = useState<string>('');
 
   // Day filter & Dissolve Truck (ตัดเฉพาะรอบวัน & ยุบสาย)
-  const [selectedDeliveryDay, setSelectedDeliveryDay] = useState<string>('ALL'); // 'ALL' | 'จันทร์' | 'อังคาร' | 'พุธ' | 'พฤหัสบดี' | 'ศุกร์' | 'เสาร์'
+  // รองรับเลือกหลายวันพร้อมกันได้ เช่น ['อังคาร', 'พฤหัสบดี', 'เสาร์']
+  const [selectedDeliveryDays, setSelectedDeliveryDays] = useState<string[]>([]); // empty = ทุกวัน
   const [isDissolveTruck, setIsDissolveTruck] = useState<boolean>(false); // ยุบสาย (โอนย้ายสมาชิกทั้งหมดออก)
+
+  // Recipient Truck Searchable Dropdown state
+  const [recipientSearchQuery, setRecipientSearchQuery] = useState<string>('');
+  const [isRecipientDropdownOpen, setIsRecipientDropdownOpen] = useState<boolean>(false);
 
   // Special conditions
   const [preserveDeliveryDays, setPreserveDeliveryDays] = useState<boolean>(true);
@@ -141,6 +146,60 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     return list;
   }, [baselineStats, donorFilterTab, donorSearchQuery, selectedDonorTrucks]);
 
+  // Filtered recipient trucks list with search support
+  const filteredRecipientList = useMemo(() => {
+    // 1. New trucks
+    const list: { truckNo: string; isNew: boolean; dailyAvg: number; monthlyBottles: number; memberCount: number; isOver: boolean }[] = [];
+    
+    newTrucks.forEach(nt => {
+      list.push({
+        truckNo: nt,
+        isNew: true,
+        dailyAvg: 0,
+        monthlyBottles: 0,
+        memberCount: 0,
+        isOver: false
+      });
+    });
+
+    // 2. Existing trucks excluding current donors
+    baselineStats
+      .filter(t => !selectedDonorTrucks.includes(t.truckNo))
+      .forEach(t => {
+        list.push({
+          truckNo: t.truckNo,
+          isNew: false,
+          dailyAvg: t.dailyAvgBottles,
+          monthlyBottles: t.monthlyBottles,
+          memberCount: t.memberCount,
+          isOver: t.status === 'overload'
+        });
+      });
+
+    if (recipientSearchQuery.trim()) {
+      const q = recipientSearchQuery.trim().toLowerCase();
+      return list.filter(item => item.truckNo.toLowerCase().includes(q));
+    }
+
+    return list;
+  }, [newTrucks, baselineStats, selectedDonorTrucks, recipientSearchQuery]);
+
+  // Toggle delivery day selection (supports multiple days e.g. อังคาร, พฤหัสบดี, เสาร์)
+  const handleToggleDeliveryDay = (dayVal: string) => {
+    if (dayVal === 'ALL') {
+      setSelectedDeliveryDays([]);
+    } else {
+      setSelectedDeliveryDays(prev => {
+        if (prev.includes(dayVal)) {
+          return prev.filter(d => d !== dayVal);
+        } else {
+          return [...prev, dayVal];
+        }
+      });
+    }
+    setSimulationResult(null);
+  };
+
   // Spatial cluster pockets for selected donor trucks
   const clustersByTruck = useMemo(() => {
     if (rebalanceMode !== 'targeted' || selectedDonorTrucks.length === 0) return [];
@@ -158,7 +217,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           lockedMemberIds, 
           excludeSpecialConditions, 
           preserveDeliveryDays,
-          filterDay: selectedDeliveryDay !== 'ALL' ? selectedDeliveryDay : undefined
+          filterDays: selectedDeliveryDays
         }
       );
       if (clusters.length > 0) {
@@ -166,7 +225,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       }
     });
     return allClusters;
-  }, [members, selectedDonorTrucks, dailyTarget90, workingDays, lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays, rebalanceMode, baselineStats, selectedDeliveryDay]);
+  }, [members, selectedDonorTrucks, dailyTarget90, workingDays, lockedMemberIds, excludeSpecialConditions, preserveDeliveryDays, rebalanceMode, baselineStats, selectedDeliveryDays]);
 
   // Add new truck
   const handleAddNewTruck = (e?: React.FormEvent) => {
@@ -242,8 +301,9 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           preserveDeliveryDays,
           excludeSpecialConditions,
           newTrucks,
-          filterDay: selectedDeliveryDay !== 'ALL' ? selectedDeliveryDay : undefined,
-          isDissolveTruck: rebalanceMode === 'targeted' ? isDissolveTruck : false
+          filterDays: selectedDeliveryDays,
+          isDissolveTruck: rebalanceMode === 'targeted' ? isDissolveTruck : false,
+          enforceMinimum90: true
         });
         setSimulationResult(result);
         setActiveTab('map');
@@ -421,10 +481,9 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         });
       }
 
-      const cleanDay = selectedDeliveryDay !== 'ALL' ? selectedDeliveryDay : undefined;
       const donorMembers = members.filter(m => {
         if (!selectedDonorTrucks.includes(m.truckNo.trim())) return false;
-        if (cleanDay && !m.deliveryDays.some(d => d.includes(cleanDay))) return false;
+        if (selectedDeliveryDays.length > 0 && !m.deliveryDays.some(d => selectedDeliveryDays.some(sd => d.includes(sd)))) return false;
         return true;
       });
 
@@ -485,7 +544,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     return () => {
       clearTimeout(timer);
     };
-  }, [activeTab, simulationResult, rebalanceMode, selectedDonorTrucks, clustersByTruck, members, isDissolveTruck, selectedDeliveryDay]);
+  }, [activeTab, simulationResult, rebalanceMode, selectedDonorTrucks, clustersByTruck, members, isDissolveTruck, selectedDeliveryDays]);
 
   // Current display stats
   const currentDisplayStats = simulationResult ? simulationResult.statsAfter : baselineStats;
@@ -940,18 +999,33 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                 </p>
               </div>
 
-              {/* Option B: ตัดเฉพาะรอบวัน (Filter by Day of Week) */}
+              {/* Option B: ตัดเฉพาะรอบวัน (Filter by Day of Week - เลือกได้หลายวันพร้อมกัน) */}
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
-                  <span>📅 ตัดเฉพาะรอบวัน (Day of Week):</span>
-                  <span className="text-[10px] text-slate-400">
-                    {selectedDeliveryDay === 'ALL' ? 'ตัดทุกวันในสาย' : `ตัดเฉพาะรอบวัน${selectedDeliveryDay}`}
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-700">
+                    📅 เลือกรอบวันที่จะตัด (เลือกได้มากกว่า 1 วัน):
+                  </label>
+                  <span className="text-[10px] text-blue-600 font-semibold">
+                    {selectedDeliveryDays.length === 0 
+                      ? 'ตัดทุกวันในสาย' 
+                      : `เลือก: ${selectedDeliveryDays.join(', ')}`}
                   </span>
-                </label>
+                </div>
 
                 <div className="grid grid-cols-4 sm:grid-cols-7 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleDeliveryDay('ALL')}
+                    className={`py-1.5 px-1 rounded text-[11px] font-bold transition text-center ${
+                      selectedDeliveryDays.length === 0
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    ทุกวัน
+                  </button>
+
                   {[
-                    { label: 'ทุกวัน', val: 'ALL' },
                     { label: 'จันทร์', val: 'จันทร์' },
                     { label: 'อังคาร', val: 'อังคาร' },
                     { label: 'พุธ', val: 'พุธ' },
@@ -959,22 +1033,20 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
                     { label: 'ศุกร์', val: 'ศุกร์' },
                     { label: 'เสาร์', val: 'เสาร์' }
                   ].map(d => {
-                    const active = selectedDeliveryDay === d.val;
+                    const active = selectedDeliveryDays.includes(d.val);
                     return (
                       <button
                         key={d.val}
                         type="button"
-                        onClick={() => {
-                          setSelectedDeliveryDay(d.val);
-                          setSimulationResult(null);
-                        }}
-                        className={`py-1.5 px-1 rounded text-[11px] font-bold transition text-center ${
+                        onClick={() => handleToggleDeliveryDay(d.val)}
+                        className={`py-1.5 px-1 rounded text-[11px] font-bold transition text-center flex items-center justify-center gap-1 ${
                           active
                             ? 'bg-blue-600 text-white shadow-2xs'
                             : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                         }`}
                       >
-                        {d.label}
+                        <span>{active ? '✓' : ''}</span>
+                        <span>{d.label}</span>
                       </button>
                     );
                   })}
@@ -982,35 +1054,140 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               </div>
             </div>
 
-            {/* Recipient Truck */}
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-              <label className="block text-xs font-bold text-slate-800 mb-1.5">
-                3. สายรถปลายทางที่จะรับโอน (Recipient Truck)
-              </label>
-              <select
-                value={targetRecipientTruck}
-                onChange={e => setTargetRecipientTruck(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-800 font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <optgroup label="สายรถใหม่ที่เพิ่ม">
-                  {newTrucks.map(t => (
-                    <option key={t} value={t}>สายใหม่: {t}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="สายรถเดิม">
-                  {baselineStats.filter(t => !selectedDonorTrucks.includes(t.truckNo)).map(t => (
-                    <option key={t.truckNo} value={t.truckNo}>
-                      สายเดิม: {t.truckNo} (ปัจจุบัน {t.dailyAvgBottles} ถัง/วัน)
-                    </option>
-                  ))}
-                </optgroup>
-              </select>
+            {/* Recipient Truck (Searchable Dropdown with Volume Info) */}
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-800">
+                  3. สายรถปลายทางที่จะรับโอน (Recipient Truck)
+                </label>
+                <span className="text-[10px] text-slate-500">
+                  พิมพ์ค้นหา &bull; แสดงยอดปัจจุบัน
+                </span>
+              </div>
+
+              {/* Selected Truck Card & Search Trigger */}
+              <div className="relative">
+                <div 
+                  onClick={() => setIsRecipientDropdownOpen(prev => !prev)}
+                  className="w-full p-2.5 border border-slate-300 rounded-lg cursor-pointer bg-slate-50/70 hover:bg-slate-100/70 transition flex items-center justify-between"
+                >
+                  <div>
+                    {targetRecipientTruck ? (
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-blue-700">
+                          สาย {targetRecipientTruck}
+                        </span>
+                        {(() => {
+                          const stat = baselineStats.find(t => t.truckNo === targetRecipientTruck);
+                          if (!stat) {
+                            return (
+                              <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-semibold">
+                                สายใหม่ (ยังไม่มียอด)
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="text-xs text-slate-600">
+                              (ปัจจุบัน: <strong className="text-slate-800">{stat.dailyAvgBottles}</strong> ถัง/วัน, {stat.monthlyBottles.toLocaleString()} ถัง/ด.)
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400 text-xs font-medium">
+                        คลิกเพื่อเลือกสายรถปลายทาง...
+                      </span>
+                    )}
+                  </div>
+
+                  <span className="text-slate-400 text-xs">▼</span>
+                </div>
+
+                {/* Dropdown Menu with Search Input */}
+                {isRecipientDropdownOpen && (
+                  <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-slate-300 rounded-xl shadow-lg z-50 p-2 space-y-2">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        placeholder="🔍 พิมพ์ค้นหาเบอร์รถปลายทาง เช่น 13S01, 13199..."
+                        value={recipientSearchQuery}
+                        onChange={e => setRecipientSearchQuery(e.target.value)}
+                        autoFocus
+                        className="w-full pl-3 pr-7 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium"
+                      />
+                      {recipientSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setRecipientSearchQuery('')}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Scrollable list of recipient options with real volume badges */}
+                    <div className="max-h-56 overflow-y-auto space-y-1 divide-y divide-slate-100 pr-1">
+                      {filteredRecipientList.length === 0 ? (
+                        <div className="py-4 text-center text-xs text-slate-400">
+                          ไม่พบสายรถที่ค้นหา
+                        </div>
+                      ) : (
+                        filteredRecipientList.map(item => {
+                          const isSelected = targetRecipientTruck === item.truckNo;
+                          return (
+                            <div
+                              key={item.truckNo}
+                              onClick={() => {
+                                setTargetRecipientTruck(item.truckNo);
+                                setIsRecipientDropdownOpen(false);
+                                setRecipientSearchQuery('');
+                                setSimulationResult(null);
+                              }}
+                              className={`p-2 rounded-lg cursor-pointer transition flex items-center justify-between text-xs ${
+                                isSelected 
+                                  ? 'bg-blue-50 border border-blue-300 font-bold' 
+                                  : 'hover:bg-slate-50 border border-transparent'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className={`font-bold ${isSelected ? 'text-blue-700' : 'text-slate-800'}`}>
+                                  สาย {item.truckNo}
+                                </span>
+                                {item.isNew && (
+                                  <span className="px-1.5 py-0.2 bg-purple-100 text-purple-700 text-[10px] rounded font-semibold">
+                                    สายใหม่
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="text-right">
+                                {item.isNew ? (
+                                  <span className="text-[11px] text-slate-400">0 ถัง/วัน</span>
+                                ) : (
+                                  <span className="text-[11px]">
+                                    <strong className={item.isOver ? 'text-rose-600' : 'text-slate-700'}>
+                                      {item.dailyAvg}
+                                    </strong>
+                                    <span className="text-slate-400 ml-0.5">ถัง/วัน</span>
+                                    <span className="text-slate-400 ml-1">({item.memberCount} จุด)</span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Add New Truck Form */}
-              <form onSubmit={handleAddNewTruck} className="flex gap-1.5 mt-2.5">
+              <form onSubmit={handleAddNewTruck} className="flex gap-1.5 pt-1">
                 <input
                   type="text"
-                  placeholder="เพิ่มสายใหม่ เช่น 13200"
+                  placeholder="เพิ่มสายใหม่ เช่น 13S01, 13200"
                   value={newTruckInput}
                   onChange={e => setNewTruckInput(e.target.value)}
                   className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -1024,11 +1201,28 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               </form>
 
               {newTrucks.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-2">
+                <div className="flex flex-wrap gap-1.5">
                   {newTrucks.map(t => (
-                    <span key={t} className="px-2 py-0.5 rounded text-[11px] bg-purple-100 text-purple-800 font-semibold border border-purple-200 flex items-center gap-1">
+                    <span 
+                      key={t} 
+                      onClick={() => setTargetRecipientTruck(t)}
+                      className={`cursor-pointer px-2 py-0.5 rounded text-[11px] font-semibold border flex items-center gap-1 ${
+                        targetRecipientTruck === t
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-purple-100 text-purple-800 border-purple-200 hover:bg-purple-200'
+                      }`}
+                    >
                       <span>{t}</span>
-                      <button onClick={() => handleRemoveNewTruck(t)} className="text-purple-600 hover:text-red-600 font-bold">×</button>
+                      <button 
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRemoveNewTruck(t);
+                        }} 
+                        className="text-white/80 hover:text-red-200 font-bold ml-1"
+                      >
+                        ×
+                      </button>
                     </span>
                   ))}
                 </div>

@@ -177,23 +177,35 @@ export function findSpatialClustersForTruck(
     excludeSpecialConditions?: boolean;
     preserveDeliveryDays?: boolean;
     filterDay?: string;
+    filterDays?: string[];
   } = {}
 ): SpatialClusterCandidate[] {
   const {
     lockedMemberIds = [],
     excludeSpecialConditions = true,
-    filterDay
+    filterDay,
+    filterDays = []
   } = options;
 
   const lockedSet = new Set(lockedMemberIds);
-  const cleanFilterDay = filterDay && filterDay !== 'ALL' ? filterDay.trim() : undefined;
+  
+  // Normalize allowed days
+  const activeDays = new Set<string>();
+  if (filterDays && filterDays.length > 0) {
+    filterDays.forEach(d => {
+      const clean = d.trim();
+      if (clean && clean !== 'ALL') activeDays.add(clean);
+    });
+  } else if (filterDay && filterDay !== 'ALL') {
+    activeDays.add(filterDay.trim());
+  }
 
   // Filter eligible members from donor truck
   const donorMembers = members.filter(m => {
     if (m.truckNo.trim() !== truckNo.trim()) return false;
     if (lockedSet.has(m.id)) return false;
     if (excludeSpecialConditions && hasSpecialDeliveryCondition(m)) return false;
-    if (cleanFilterDay && !m.deliveryDays.some(d => d.includes(cleanFilterDay))) return false;
+    if (activeDays.size > 0 && !m.deliveryDays.some(d => Array.from(activeDays).some(ad => d.includes(ad)))) return false;
     return true;
   });
 
@@ -287,7 +299,7 @@ export function findSpatialClustersForTruck(
     }
 
     const clusterDailyBottles = workingDays > 0 ? Math.round((accumulatedMonthlyBottles / workingDays) * 10) / 10 : 0;
-    const dayLabel = cleanFilterDay ? ` [รอบ ${cleanFilterDay}]` : '';
+    const dayLabel = activeDays.size > 0 ? ` [รอบ ${Array.from(activeDays).join('/')}]` : '';
 
     clusters.push({
       clusterId: `cluster-${truckNo}-${index + 1}`,
@@ -376,7 +388,17 @@ export function runRebalanceSimulation(
     }
 
     let recipientIndex = 0;
-    const cleanFilterDay = filterDay && filterDay !== 'ALL' ? filterDay.trim() : undefined;
+    
+    // Normalize active filter days
+    const activeDays = new Set<string>();
+    if (config.filterDays && config.filterDays.length > 0) {
+      config.filterDays.forEach(d => {
+        const clean = d.trim();
+        if (clean && clean !== 'ALL') activeDays.add(clean);
+      });
+    } else if (config.filterDay && config.filterDay !== 'ALL') {
+      activeDays.add(config.filterDay.trim());
+    }
 
     for (const cleanDonor of selectedDonors) {
       const currentRecipient = recipientsList[recipientIndex % recipientsList.length];
@@ -387,7 +409,7 @@ export function runRebalanceSimulation(
           if (m.truckNo.trim() === cleanDonor) {
             if (lockedMemberSet.has(m.id)) return;
             if (excludeSpecialConditions && hasSpecialDeliveryCondition(m)) return;
-            if (cleanFilterDay && !m.deliveryDays.some(d => d.includes(cleanFilterDay))) return;
+            if (activeDays.size > 0 && !m.deliveryDays.some(d => Array.from(activeDays).some(ad => d.includes(ad)))) return;
 
             const oldTruck = m.truckNo;
             m.truckNo = currentRecipient;
@@ -416,9 +438,16 @@ export function runRebalanceSimulation(
       }
 
       // CASE 2: ตัดเฉพาะยอดส่วนเกิน 90% โดยเลือกเป็นกลุ่มก้อนเชิงพื้นที่ (GPS ใกล้เคียงกัน)
-      const donorStat = statsBefore.find(s => s.truckNo === cleanDonor);
-      const currentDaily = donorStat ? donorStat.dailyAvgBottles : targetDailyBottles;
-      const excessDaily = Math.max(10, currentDaily - targetDailyBottles);
+      // คำนวณยอดปัจจุบันของสาย donor
+      const currentDonorMembers = workingMembers.filter(m => m.truckNo.trim() === cleanDonor);
+      const donorMonthlyBottles = currentDonorMembers.reduce((sum, m) => sum + calculateMemberMonthlyBottles(m), 0);
+      const donorDailyBottles = workingDays > 0 ? donorMonthlyBottles / workingDays : 0;
+
+      // ถ้าสายนี้ไม่ได้เกิน 90% และต้องการล็อกไม่ให้ต่ำกว่า 90% ก็จะไม่ตัดออก
+      const excessDaily = donorDailyBottles - targetDailyBottles;
+      if (excessDaily <= 0) {
+        continue; // ไม่มียอดส่วนเกินให้ตัด
+      }
 
       // Find spatial clusters in donor truck
       const clusters = findSpatialClustersForTruck(
@@ -430,7 +459,7 @@ export function runRebalanceSimulation(
           lockedMemberIds, 
           excludeSpecialConditions, 
           preserveDeliveryDays,
-          filterDay: cleanFilterDay
+          filterDays: Array.from(activeDays)
         }
       );
 
@@ -440,34 +469,54 @@ export function runRebalanceSimulation(
         : clusters[0];
 
       if (chosenCluster && chosenCluster.members.length > 0) {
-        const movedIds = new Set(chosenCluster.members.map(m => m.id));
+        // กฎเหล็ก: ห้ามตัดจนยอดสายรถต่ำกว่า 90% (targetDailyBottles)
+        // วนหยิบสมาชิกทีละคนตามระยะห่าง GPS (ใกล้สุดไปไกลสุด) โดยตรวจสอบว่ายอดคงเหลือยัง >= targetDailyBottles
+        let remainingMonthly = donorMonthlyBottles;
+        const movedMembers: Member[] = [];
 
-        workingMembers.forEach(m => {
-          if (m.truckNo.trim() === cleanDonor && movedIds.has(m.id)) {
-            const oldTruck = m.truckNo;
-            m.truckNo = currentRecipient;
-
-            // Preserve member's delivery days unchanged!
-            const monthlyBottles = calculateMemberMonthlyBottles(m);
-            reassignedMembers.push({
-              memberId: m.id,
-              memberName: m.name,
-              oldTruck,
-              newTruck: currentRecipient,
-              monthlyBottles,
-              deliveryDays: m.deliveryDays || [],
-              address: m.address,
-              lat: m.lat,
-              lng: m.lng,
-              hasGps: m.hasGps,
-              distanceKm: calculateDistanceKm(chosenCluster.seedLat, chosenCluster.seedLng, m.lat, m.lng)
-            });
+        for (const cand of chosenCluster.members) {
+          const mBottle = calculateMemberMonthlyBottles(cand);
+          const afterCutDaily = (remainingMonthly - mBottle) / workingDays;
+          
+          // ถ้าตัดจุดนี้แล้วยอดจะตกต่ำกว่า 90% (เช่น ต่ำกว่า 144 ถัง/วัน) ให้หยุดตัดทันที!
+          if (afterCutDaily < targetDailyBottles && movedMembers.length > 0) {
+            break;
           }
-        });
 
-        // Rotate to next recipient if multiple available and cluster was transferred
-        if (recipientsList.length > 1) {
-          recipientIndex++;
+          movedMembers.push(cand);
+          remainingMonthly -= mBottle;
+        }
+
+        if (movedMembers.length > 0) {
+          const movedIds = new Set(movedMembers.map(m => m.id));
+
+          workingMembers.forEach(m => {
+            if (m.truckNo.trim() === cleanDonor && movedIds.has(m.id)) {
+              const oldTruck = m.truckNo;
+              m.truckNo = currentRecipient;
+
+              // Preserve member's delivery days unchanged!
+              const monthlyBottles = calculateMemberMonthlyBottles(m);
+              reassignedMembers.push({
+                memberId: m.id,
+                memberName: m.name,
+                oldTruck,
+                newTruck: currentRecipient,
+                monthlyBottles,
+                deliveryDays: m.deliveryDays || [],
+                address: m.address,
+                lat: m.lat,
+                lng: m.lng,
+                hasGps: m.hasGps,
+                distanceKm: calculateDistanceKm(chosenCluster.seedLat, chosenCluster.seedLng, m.lat, m.lng)
+              });
+            }
+          });
+
+          // Rotate to next recipient if multiple available and cluster was transferred
+          if (recipientsList.length > 1) {
+            recipientIndex++;
+          }
         }
       }
     }
