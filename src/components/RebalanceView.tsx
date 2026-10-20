@@ -55,11 +55,11 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const [newTruckInput, setNewTruckInput] = useState<string>('');
   const [newTrucks, setNewTrucks] = useState<string[]>(['13S01', '13199']);
 
-  // Step 2 Interactive Staging State: Map of transferred nearby groups/stops to targetRecipientTruck
-  // Key: clusterId, Value: { donorTruck: string; cluster: SpatialClusterCandidate }
-  const [stagedTransfers, setStagedTransfers] = useState<Map<string, { donorTruck: string; cluster: SpatialClusterCandidate }>>(new Map());
-  const [hoveredNearbyId, setHoveredNearbyId] = useState<string | null>(null);
-  const [selectedIndividualMemberIds, setSelectedIndividualMemberIds] = useState<Set<string>>(new Set());
+  // Step 2 Staging: Set of individual member IDs selected to transfer to targetRecipientTruck
+  const [selectedMemberIds, setSelectedMemberIds] = useState<Set<string>>(new Set());
+  const [hoveredMemberId, setHoveredMemberId] = useState<string | null>(null);
+  const [memberSearchQuery, setMemberSearchQuery] = useState<string>('');
+  const [selectedRoadFilter, setSelectedRoadFilter] = useState<string>('ALL');
 
   // Simulation execution / Persistence state
   const [simulationResult, setSimulationResult] = useState<RebalanceResult | null>(null);
@@ -71,7 +71,6 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
-  const clusterCircleLayerRef = useRef<L.LayerGroup | null>(null);
   const routePolylineLayerRef = useRef<L.LayerGroup | null>(null);
   const [roadStats, setRoadStats] = useState<{ distanceKm: number; durationMinutes: number } | null>(null);
 
@@ -86,32 +85,25 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     );
   }, [members, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
 
-  // Compute available pocket clusters for each selected donor truck
-  // Each donor can produce 1-3 contiguous pocket clusters strictly for selected delivery days
-  const donorClustersMap = useMemo(() => {
-    const map = new Map<string, SpatialClusterCandidate[]>();
-
-    selectedDonorTrucks.forEach(tNo => {
-      const stat = baselineStats.find(s => s.truckNo === tNo);
-      const currentDaily = stat ? stat.dailyAvgBottles : dailyTarget90;
-      const excessDaily = Math.max(10, currentDaily - dailyTarget90);
-
-      const clusters = findSpatialClustersForTruck(
-        members,
-        tNo,
-        excessDaily,
-        workingDays,
-        {
-          preserveDeliveryDays: true,
-          excludeSpecialConditions: true,
-          filterDays: selectedDeliveryDays
-        }
-      );
-      map.set(tNo, clusters);
+  // Eligible donor members (matching selected donor trucks and delivery days)
+  const eligibleDonorMembers = useMemo(() => {
+    return members.filter(m => {
+      if (!selectedDonorTrucks.includes(m.truckNo.trim())) return false;
+      if (selectedDeliveryDays.length > 0 && !m.deliveryDays.some(d => selectedDeliveryDays.some(sd => d.includes(sd)))) return false;
+      return true;
     });
+  }, [members, selectedDonorTrucks, selectedDeliveryDays]);
 
-    return map;
-  }, [members, selectedDonorTrucks, baselineStats, dailyTarget90, workingDays, selectedDeliveryDays]);
+  // Roads list for quick filter chips
+  const availableRoads = useMemo(() => {
+    const roadMap = new Map<string, number>();
+    eligibleDonorMembers.forEach(m => {
+      const info = parseAddressRoadInfo(m.address);
+      const rName = info.road || info.village || 'ไม่มีชื่อถนน';
+      roadMap.set(rName, (roadMap.get(rName) || 0) + 1);
+    });
+    return Array.from(roadMap.entries()).sort((a, b) => b[1] - a[1]);
+  }, [eligibleDonorMembers]);
 
   // Handle Adding New Truck
   const handleAddNewTruck = (e?: React.FormEvent) => {
@@ -134,7 +126,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]
       );
     }
-    setStagedTransfers(new Map());
+    setSelectedMemberIds(new Set());
     setSimulationResult(null);
   };
 
@@ -143,71 +135,77 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     setSelectedDonorTrucks(prev => 
       prev.includes(tNo) ? prev.filter(t => t !== tNo) : [...prev, tNo]
     );
-    setStagedTransfers(new Map());
+    setSelectedMemberIds(new Set());
     setSimulationResult(null);
   };
 
-  // Transfer an entire group of nearby stops to target truck
-  const handleStageNearbyGroup = (donorTruck: string, group: SpatialClusterCandidate) => {
-    setStagedTransfers(prev => {
-      const next = new Map(prev);
-      if (next.has(group.clusterId)) {
-        next.delete(group.clusterId);
-      } else {
-        next.set(group.clusterId, { donorTruck, cluster: group });
-      }
-      return next;
-    });
-  };
-
-  // Toggle individual stop transfer directly
-  const handleToggleIndividualStop = (member: Member) => {
-    setSelectedIndividualMemberIds(prev => {
+  // Toggle individual member stop transfer
+  const handleToggleMember = (memberId: string) => {
+    setSelectedMemberIds(prev => {
       const next = new Set(prev);
-      if (next.has(member.id)) {
-        next.delete(member.id);
+      if (next.has(memberId)) {
+        next.delete(memberId);
       } else {
-        next.add(member.id);
+        next.add(memberId);
       }
       return next;
     });
   };
 
-  // Quick auto-stage: pick best contiguous nearby stops from each donor truck
-  const handleAutoStageAll = () => {
-    const next = new Map<string, { donorTruck: string; cluster: SpatialClusterCandidate }>();
-    donorClustersMap.forEach((clusters, tNo) => {
+  // Select all members in a given truck list
+  const handleSelectAllTruckMembers = (truckMembers: Member[]) => {
+    setSelectedMemberIds(prev => {
+      const next = new Set(prev);
+      truckMembers.forEach(m => next.add(m.id));
+      return next;
+    });
+  };
+
+  // Unselect all members in a given truck list
+  const handleUnselectAllTruckMembers = (truckMembers: Member[]) => {
+    setSelectedMemberIds(prev => {
+      const next = new Set(prev);
+      truckMembers.forEach(m => next.delete(m.id));
+      return next;
+    });
+  };
+
+  // Auto-suggest contiguous candidate stops along road without dropping donor below 90%
+  const handleAutoSuggest = () => {
+    const next = new Set(selectedMemberIds);
+    selectedDonorTrucks.forEach(tNo => {
+      const stat = baselineStats.find(s => s.truckNo === tNo);
+      const currentDaily = stat ? stat.dailyAvgBottles : dailyTarget90;
+      const excessDaily = Math.max(0, currentDaily - dailyTarget90);
+      if (excessDaily <= 0) return;
+
+      const excessMonthly = excessDaily * workingDays;
+      let gathered = 0;
+
+      const clusters = findSpatialClustersForTruck(members, tNo, excessDaily, workingDays, {
+        filterDays: selectedDeliveryDays
+      });
       if (clusters.length > 0) {
-        next.set(clusters[0].clusterId, { donorTruck: tNo, cluster: clusters[0] });
+        for (const m of clusters[0].members) {
+          next.add(m.id);
+          gathered += calculateMemberMonthlyBottles(m);
+          if (gathered >= excessMonthly) break;
+        }
       }
     });
-    setStagedTransfers(next);
+    setSelectedMemberIds(next);
   };
 
   // Unstage all
   const handleUnstageAll = () => {
-    setStagedTransfers(new Map());
-    setSelectedIndividualMemberIds(new Set());
+    setSelectedMemberIds(new Set());
   };
 
-  // Real-Time Staged Metrics Computation
+  // Real-Time Staged Metrics Computation based strictly on individual member stops
   const liveStats = useMemo(() => {
-    // Collect all moved member IDs
     const movedMemberMap = new Map<string, { member: Member; oldTruck: string; newTruck: string }>();
 
-    // 1. From staged nearby groups
-    stagedTransfers.forEach(({ donorTruck, cluster }) => {
-      cluster.members.forEach(m => {
-        movedMemberMap.set(m.id, {
-          member: m,
-          oldTruck: donorTruck,
-          newTruck: targetRecipientTruck
-        });
-      });
-    });
-
-    // 2. From individual clicked stops
-    selectedIndividualMemberIds.forEach(id => {
+    selectedMemberIds.forEach(id => {
       const m = members.find(mem => mem.id === id);
       if (m) {
         movedMemberMap.set(m.id, {
@@ -218,7 +216,6 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       }
     });
 
-    // Create modified members copy
     const modifiedMembers = members.map(m => {
       if (movedMemberMap.has(m.id)) {
         return { ...m, truckNo: movedMemberMap.get(m.id)!.newTruck };
@@ -246,12 +243,12 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       totalTransferredDaily,
       movedMemberMap
     };
-  }, [members, stagedTransfers, selectedIndividualMemberIds, targetRecipientTruck, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
+  }, [members, selectedMemberIds, targetRecipientTruck, workingDays, targetCapacityPerDay, targetPercentage, newTrucks]);
 
   // Finalize Simulation & Advance to Step 3
   const handleProceedToReview = () => {
-    if (stagedTransfers.size === 0 && !isDissolveTruck) {
-      alert('กรุณาเลือกโอนย้ายกระจุกพื้นที่อย่างน้อย 1 กลุ่ม');
+    if (selectedMemberIds.size === 0 && !isDissolveTruck) {
+      alert('กรุณาเลือกจุดส่งของสมาชิกที่ต้องการโอนย้ายอย่างน้อย 1 จุด');
       return;
     }
 
@@ -308,7 +305,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
       setApplySuccessMsg(`จัดสายใหม่สำเร็จเรียบร้อย! ปรับปรุงสายรถให้สมาชิก ${reassignedCount.toLocaleString()} จุดส่ง`);
       setWizardStep(1);
-      setStagedTransfers(new Map());
+      setSelectedMemberIds(new Set());
       setSimulationResult(null);
     } catch (err) {
       console.error(err);
@@ -339,16 +336,14 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       }).addTo(map);
 
       markersLayerRef.current = L.layerGroup().addTo(map);
-      clusterCircleLayerRef.current = L.layerGroup().addTo(map);
       routePolylineLayerRef.current = L.layerGroup().addTo(map);
       mapInstanceRef.current = map;
     }
 
     const map = mapInstanceRef.current;
     const markersLayer = markersLayerRef.current;
-    const circleLayer = clusterCircleLayerRef.current;
     const polylineLayer = routePolylineLayerRef.current;
-    if (!map || !markersLayer || !circleLayer || !polylineLayer) return;
+    if (!map || !markersLayer || !polylineLayer) return;
 
     const timer = setTimeout(() => {
       try {
@@ -357,7 +352,6 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     }, 150);
 
     markersLayer.clearLayers();
-    circleLayer.clearLayers();
     polylineLayer.clearLayers();
 
     const bounds = L.latLngBounds([]);
@@ -365,27 +359,6 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
     // Filter relevant members to display
     const relevantTrucks = new Set([...selectedDonorTrucks, targetRecipientTruck]);
-    const stagedClusterIds = new Set(Array.from(stagedTransfers.keys()));
-
-    // Draw Cluster Circles (with tighter, road-corridor radius)
-    donorClustersMap.forEach((clusters) => {
-      clusters.forEach(c => {
-        const isStaged = stagedClusterIds.has(c.clusterId);
-        const isHovered = hoveredNearbyId === c.clusterId;
-
-        if (c.radiusKm > 0) {
-          const circle = L.circle([c.seedLat, c.seedLng], {
-            radius: Math.min(c.radiusKm, 3.8) * 1000,
-            color: isStaged ? '#9333ea' : (isHovered ? '#f59e0b' : '#3b82f6'),
-            weight: isStaged || isHovered ? 2.5 : 1.2,
-            dashArray: isStaged ? undefined : '4, 4',
-            fillColor: isStaged ? '#9333ea' : (isHovered ? '#f59e0b' : '#3b82f6'),
-            fillOpacity: isStaged ? 0.15 : 0.06
-          });
-          circleLayer.addLayer(circle);
-        }
-      });
-    });
 
     // 1. Prepare transferred stops to sequence them along road corridors
     const transferredList: Member[] = [];
@@ -456,7 +429,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
       setRoadStats(null);
     }
 
-    // 3. Draw Member Markers
+    // 3. Draw Member Markers (จุดของสมาชิกแต่ละราย)
     members.forEach(m => {
       if (!relevantTrucks.has(m.truckNo.trim())) return;
       if (!m.hasGps || !m.lat || !m.lng) return;
@@ -468,6 +441,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
       const isMoved = liveStats.movedMemberMap.has(m.id);
       const isRecipient = m.truckNo.trim() === targetRecipientTruck;
+      const isHovered = hoveredMemberId === m.id;
       const roadInfo = parseAddressRoadInfo(m.address);
 
       let marker: L.Layer;
@@ -478,24 +452,24 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
         const divIcon = L.divIcon({
           className: 'road-sequence-marker',
           html: `
-            <div style="background-color: #7e22ce; color: #ffffff; border: 2px solid #ffffff; width: 24px; height: 24px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; box-shadow: 0 2px 6px rgba(126, 34, 206, 0.45); cursor: pointer; transition: transform 0.15s ease;">
+            <div style="background-color: ${isHovered ? '#ea580c' : '#7e22ce'}; color: #ffffff; border: 2px solid #ffffff; width: ${isHovered ? '28px' : '24px'}; height: ${isHovered ? '28px' : '24px'}; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-size: ${isHovered ? '12px' : '11px'}; font-weight: 800; box-shadow: 0 2px 8px ${isHovered ? 'rgba(234, 88, 12, 0.6)' : 'rgba(126, 34, 206, 0.45)'}; cursor: pointer; transition: all 0.15s ease;">
               ${seqNumber}
             </div>
           `,
-          iconSize: [24, 24],
-          iconAnchor: [12, 12],
+          iconSize: isHovered ? [28, 28] : [24, 24],
+          iconAnchor: isHovered ? [14, 14] : [12, 12],
           popupAnchor: [0, -12]
         });
         marker = L.marker([m.lat, m.lng], { icon: divIcon });
       } else {
         // Donor Original Stop: clean blue circle marker
         marker = L.circleMarker([m.lat, m.lng], {
-          radius: 4,
-          fillColor: '#3b82f6',
+          radius: isHovered ? 7 : 4,
+          fillColor: isHovered ? '#f59e0b' : '#3b82f6',
           color: '#ffffff',
-          weight: 1,
+          weight: isHovered ? 2.5 : 1,
           opacity: 1,
-          fillOpacity: 0.65
+          fillOpacity: isHovered ? 1 : 0.7
         });
       }
 
@@ -514,16 +488,16 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
           <span>รอบส่ง (คงเดิม): <strong>${m.deliveryDays.join(', ')}</strong></span><br/>
           <span>ยอดส่ง: <strong>${calculateMemberMonthlyBottles(m)}</strong> ถัง/เดือน</span><br/>
           <div style="margin-top: 6px; text-align: center;">
-            <span style="display: inline-block; padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 11px; background: ${isMoved ? '#f3e8ff' : '#eff6ff'}; color: ${isMoved ? '#7e22ce' : '#1d4ed8'}; border: 1px solid ${isMoved ? '#d8b4fe' : '#bfdbfe'};">
+            <button id="btn-toggle-${m.id.replace(/\//g, '_')}" style="padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 11px; cursor: pointer; background: ${isMoved ? '#f3e8ff' : '#eff6ff'}; color: ${isMoved ? '#7e22ce' : '#1d4ed8'}; border: 1px solid ${isMoved ? '#d8b4fe' : '#bfdbfe'};">
               ${isMoved ? '✓ ย้ายเข้าสาย ' + targetRecipientTruck + ' แล้ว (คลิกเพื่อยกเลิก)' : 'อยู่ในสายเดิม ' + m.truckNo + ' (คลิกเพื่อโอนย้าย)'}
-            </span>
+            </button>
           </div>
         </div>
       `);
 
-      // Clicking a marker directly toggles its transfer!
+      // Clicking marker directly toggles this member!
       marker.on('click', () => {
-        handleToggleIndividualStop(m);
+        handleToggleMember(m.id);
       });
 
       markersLayer.addLayer(marker);
@@ -536,7 +510,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
     }
 
     return () => clearTimeout(timer);
-  }, [wizardStep, members, selectedDonorTrucks, targetRecipientTruck, selectedDeliveryDays, stagedTransfers, selectedIndividualMemberIds, hoveredNearbyId, liveStats, donorClustersMap]);
+  }, [wizardStep, members, selectedDonorTrucks, targetRecipientTruck, selectedDeliveryDays, selectedMemberIds, hoveredMemberId, liveStats]);
 
   return (
     <div className="space-y-4">
@@ -590,7 +564,7 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
 
           <button
             onClick={() => setWizardStep(3)}
-            disabled={!simulationResult && stagedTransfers.size === 0}
+            disabled={!simulationResult && selectedMemberIds.size === 0}
             className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
               wizardStep === 3
                 ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
@@ -897,8 +871,11 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
             {/* Action Bar Header */}
             <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
               <div>
-                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  กระดานจัดย้ายกระจุกพื้นที่ (Live Staging)
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <span>📍 จัดย้ายตามจุดของสมาชิก</span>
+                  <span className="text-[10px] bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded font-semibold">
+                    เลือกรายจุด
+                  </span>
                 </h3>
                 <span className="text-[11px] text-slate-500">
                   โอนย้ายไปยังสาย: <strong className="text-purple-700">{targetRecipientTruck}</strong>
@@ -907,18 +884,22 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               <div className="flex gap-1.5">
                 <button
                   type="button"
-                  onClick={handleAutoStageAll}
-                  className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-semibold transition"
+                  onClick={handleAutoSuggest}
+                  className="px-2.5 py-1 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 rounded-lg text-xs font-semibold transition flex items-center gap-1"
+                  title="แนะนำจุดส่งที่อยู่ใกล้เคียงตามแนวถนนเพื่อเกลี่ยยอดให้ถึง 90%"
                 >
-                  ⚡ เลือกกระจุกอัตโนมัติ
+                  <span>⚡</span>
+                  <span>แนะนำจุดใกล้เคียง</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={handleUnstageAll}
-                  className="px-2 py-1 text-slate-500 hover:text-slate-800 rounded-lg text-xs transition"
-                >
-                  ล้าง
-                </button>
+                {selectedMemberIds.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleUnstageAll}
+                    className="px-2 py-1 text-slate-500 hover:text-rose-600 rounded-lg text-xs transition"
+                  >
+                    ล้าง ({selectedMemberIds.size})
+                  </button>
+                )}
               </div>
             </div>
 
@@ -965,84 +946,223 @@ export const RebalanceView: React.FC<RebalanceViewProps> = ({
               })()}
             </div>
 
-            {/* List of Source Donor Trucks & Nearby Stops Groups Cards */}
-            <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
+            {/* Search & Road Quick-Filter */}
+            <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs space-y-2">
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="🔍 ค้นหาจุดส่ง (รหัส, ชื่อลูกค้า, ที่อยู่, ถนน, ซอย)..."
+                  value={memberSearchQuery}
+                  onChange={(e) => setMemberSearchQuery(e.target.value)}
+                  className="w-full text-xs pl-3 pr-8 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:bg-white focus:border-purple-600 transition"
+                />
+                {memberSearchQuery && (
+                  <button 
+                    onClick={() => setMemberSearchQuery('')}
+                    className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 text-xs"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* Road Quick-Filter Chips */}
+              {availableRoads.length > 0 && (
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px]">
+                  <span className="text-slate-400 whitespace-nowrap text-[10px]">ถนน:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRoadFilter('ALL')}
+                    className={`px-2 py-0.5 rounded-full whitespace-nowrap transition font-medium ${
+                      selectedRoadFilter === 'ALL'
+                        ? 'bg-purple-600 text-white font-bold'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    ทั้งหมด ({eligibleDonorMembers.length})
+                  </button>
+                  {availableRoads.slice(0, 8).map(([roadName, count]) => (
+                    <button
+                      key={roadName}
+                      type="button"
+                      onClick={() => setSelectedRoadFilter(roadName === selectedRoadFilter ? 'ALL' : roadName)}
+                      className={`px-2 py-0.5 rounded-full whitespace-nowrap transition ${
+                        selectedRoadFilter === roadName
+                          ? 'bg-purple-600 text-white font-bold'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {roadName} ({count})
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* List of Donor Trucks & Individual Member Stops */}
+            <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
               {selectedDonorTrucks.map(tNo => {
                 const beforeStat = baselineStats.find(t => t.truckNo === tNo);
                 const afterStat = liveStats.statsAfter.find(t => t.truckNo === tNo);
-                const clusters = donorClustersMap.get(tNo) || [];
 
                 const beforeDaily = beforeStat ? beforeStat.dailyAvgBottles : 0;
                 const afterDaily = afterStat ? afterStat.dailyAvgBottles : beforeDaily;
                 const isOver90 = afterDaily >= dailyTarget90;
 
+                // All eligible members for this truck matching selected delivery days
+                const truckMembers = eligibleDonorMembers.filter(m => m.truckNo.trim() === tNo);
+                
+                // Filtered by search & road
+                const displayedMembers = truckMembers.filter(m => {
+                  const q = memberSearchQuery.trim().toLowerCase();
+                  if (q) {
+                    const matchId = m.id.toLowerCase().includes(q);
+                    const matchName = m.name.toLowerCase().includes(q);
+                    const matchAddr = (m.address || '').toLowerCase().includes(q);
+                    if (!matchId && !matchName && !matchAddr) return false;
+                  }
+                  if (selectedRoadFilter !== 'ALL') {
+                    const info = parseAddressRoadInfo(m.address);
+                    const rName = info.road || info.village || 'ไม่มีชื่อถนน';
+                    if (rName !== selectedRoadFilter) return false;
+                  }
+                  return true;
+                });
+
+                const transferredCount = truckMembers.filter(m => selectedMemberIds.has(m.id)).length;
+
                 return (
-                  <div key={tNo} className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs space-y-2.5">
-                    {/* Truck Header & Gauge */}
-                    <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                  <div key={tNo} className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+                    {/* Truck Header */}
+                    <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                       <div>
-                        <span className="font-bold text-sm text-slate-900">สาย {tNo}</span>
-                        <div className="text-[11px] text-slate-500">
-                          เดิม {beforeDaily} &rarr; <strong className={isOver90 ? 'text-emerald-600' : 'text-amber-600'}>{afterDaily}</strong> ถัง/วัน
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-slate-900">สาย {tNo}</span>
+                          <span className={`px-2 py-0.2 rounded text-[10px] font-bold ${
+                            isOver90
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {isOver90 ? '✓ ไม่ต่ำกว่า 90%' : '⚠️ ต่ำกว่า 90%'}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          ยอดเดิม {beforeDaily} &rarr; เหลือ <strong className={isOver90 ? 'text-emerald-700 font-bold' : 'text-amber-700 font-bold'}>{afterDaily}</strong> ถัง/วัน
+                          <span className="text-slate-400 mx-1.5">|</span>
+                          เลือกย้าย: <strong className="text-purple-700">{transferredCount}</strong> / {truckMembers.length} จุด
                         </div>
                       </div>
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                        afterDaily >= dailyTarget90 
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                          : 'bg-amber-50 text-amber-700 border border-amber-200'
-                      }`}>
-                        {afterDaily >= dailyTarget90 ? '✓ ไม่ต่ำกว่า 90%' : '⚠️ ใกล้เคียงเป้าหมาย'}
-                      </span>
+
+                      {/* Quick batch toggle for this truck */}
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectAllTruckMembers(displayedMembers)}
+                          className="px-2 py-1 bg-white hover:bg-purple-50 text-purple-700 border border-purple-200 rounded text-[11px] font-semibold transition"
+                          title="เลือกจุดส่งทั้งหมดที่แสดงในสายนี้"
+                        >
+                          + เลือกทั้งหมด
+                        </button>
+                        {transferredCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleUnselectAllTruckMembers(truckMembers)}
+                            className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 rounded text-[11px] transition"
+                            title="ยกเลิกการเลือกในสายนี้"
+                          >
+                            ล้าง
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Nearby Stops Groups within this truck */}
-                    {clusters.length === 0 ? (
-                      <div className="text-xs text-slate-400 py-2 text-center bg-slate-50 rounded-lg">
-                        ไม่พบจุดส่งในรอบวันที่เลือก
-                      </div>
-                    ) : (
-                      <div className="space-y-1.5">
-                        {clusters.map((c, idx) => {
-                          const isStaged = stagedTransfers.has(c.clusterId);
+                    {/* Member Stops Cards */}
+                    <div className="p-2 space-y-1.5 max-h-[340px] overflow-y-auto">
+                      {displayedMembers.length === 0 ? (
+                        <div className="text-center text-xs text-slate-400 py-4">
+                          ไม่พบจุดส่งสมาชิกที่ตรงกับเงื่อนไขการค้นหา
+                        </div>
+                      ) : (
+                        displayedMembers.map(m => {
+                          const isSelected = selectedMemberIds.has(m.id);
+                          const isHovered = hoveredMemberId === m.id;
+                          const monthly = calculateMemberMonthlyBottles(m);
+                          const daily = workingDays > 0 ? Math.round((monthly / workingDays) * 10) / 10 : 0;
+                          const roadInfo = parseAddressRoadInfo(m.address);
+
                           return (
                             <div
-                              key={c.clusterId}
-                              onMouseEnter={() => setHoveredNearbyId(c.clusterId)}
-                              onMouseLeave={() => setHoveredNearbyId(null)}
-                              className={`p-2.5 rounded-lg border text-xs transition flex items-center justify-between ${
-                                isStaged 
-                                  ? 'bg-purple-50 border-purple-300 ring-1 ring-purple-400' 
-                                  : 'bg-slate-50 hover:bg-slate-100 border-slate-200'
+                              key={m.id}
+                              onMouseEnter={() => setHoveredMemberId(m.id)}
+                              onMouseLeave={() => setHoveredMemberId(null)}
+                              onClick={() => handleToggleMember(m.id)}
+                              className={`p-2 rounded-lg border text-xs cursor-pointer transition flex items-center justify-between gap-2 ${
+                                isSelected
+                                  ? 'bg-purple-50/80 border-purple-300 ring-1 ring-purple-400 shadow-2xs'
+                                  : (isHovered ? 'bg-slate-50 border-blue-300 shadow-2xs' : 'bg-white hover:bg-slate-50/80 border-slate-200')
                               }`}
                             >
-                              <div className="space-y-0.5">
-                                <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                                  <span>กลุ่มจุดใกล้เคียง ชุดที่ {idx + 1}</span>
-                                  <span className="text-[10px] text-purple-700 bg-purple-100/70 px-1.5 py-0.2 rounded font-semibold">
-                                    ระยะ ~{c.radiusKm} กม.
-                                  </span>
-                                </div>
-                                <div className="text-[11px] text-slate-500">
-                                  {c.memberCount} จุดส่ง &bull; <strong>{c.dailyAvgBottles}</strong> ถัง/วัน ({c.monthlyBottles.toLocaleString()} ถัง/ด.)
+                              <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => {}} // handled by parent onClick
+                                  className="mt-1 rounded text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer"
+                                />
+
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-mono font-bold text-slate-900">{m.id}</span>
+                                    <span className="font-semibold text-slate-800 truncate max-w-[140px]">{m.name}</span>
+                                    {isSelected && (
+                                      <span className="px-1.5 py-0.2 rounded-full bg-purple-600 text-white text-[10px] font-bold">
+                                        ✓ ย้ายแล้ว
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="text-[11px] text-slate-500 truncate mt-0.5 flex items-center gap-1">
+                                    {roadInfo.road && (
+                                      <span className="text-purple-800 font-medium bg-purple-100/60 px-1 py-0.2 rounded text-[10px]">
+                                        🛣️ {roadInfo.road}
+                                      </span>
+                                    )}
+                                    <span className="truncate">{m.address || '-'}</span>
+                                  </div>
+
+                                  <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
+                                    <span>รอบ: <strong className="text-slate-600">{m.deliveryDays.join(', ')}</strong></span>
+                                  </div>
                                 </div>
                               </div>
 
-                              <button
-                                type="button"
-                                onClick={() => handleStageNearbyGroup(tNo, c)}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-2xs ${
-                                  isStaged
-                                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
-                                    : 'bg-purple-600 hover:bg-purple-700 text-white'
-                                }`}
-                              >
-                                {isStaged ? '↩ ยกเลิก' : 'โอนเข้า ➔'}
-                              </button>
+                              <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                                <div className="text-right">
+                                  <span className="font-bold text-slate-900">{monthly}</span>
+                                  <span className="text-[10px] text-slate-400 ml-0.5">ถัง/ด.</span>
+                                  <span className="text-[10px] text-purple-700 font-semibold block">~{daily} ถัง/วัน</span>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleToggleMember(m.id);
+                                  }}
+                                  className={`px-2 py-1 rounded text-[10px] font-bold transition ${
+                                    isSelected
+                                      ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+                                      : 'bg-purple-600 hover:bg-purple-700 text-white'
+                                  }`}
+                                >
+                                  {isSelected ? '↩ คืนสายเดิม' : '+ โอนเข้า'}
+                                </button>
+                              </div>
                             </div>
                           );
-                        })}
-                      </div>
-                    )}
+                        })
+                      )}
+                    </div>
                   </div>
                 );
               })}
