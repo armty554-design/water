@@ -229,9 +229,61 @@ export async function markStopCompletedInCloud(
   return true;
 }
 
+export interface CloudTruckSummary {
+  truckNo: string;
+  count: number;
+}
+
+export interface CloudMeta {
+  totalMembers: number;
+  trucksCount: number;
+  trucks?: CloudTruckSummary[];
+  sourceFile?: string;
+  updatedAt: string;
+}
+
+/**
+ * Fetch lightweight system metadata (~8KB) including list of all trucks and total counts
+ */
+export async function getCloudMeta(): Promise<CloudMeta | null> {
+  const db = getFirebaseDb();
+  if (!db) return null;
+
+  try {
+    const snap = await getDoc(doc(db, 'system', 'meta'));
+    return snap.exists() ? (snap.data() as CloudMeta) : null;
+  } catch (err) {
+    console.warn('Failed to get Cloud meta:', err);
+    return null;
+  }
+}
+
+/**
+ * Fetch members for a single truck from Firestore (~100-750 records, fast single-doc read)
+ */
+export async function getTruckMembersFromCloud(truckNo: string): Promise<Member[]> {
+  const db = getFirebaseDb();
+  if (!db || !truckNo) return [];
+
+  const docId = truckNo.trim().replace(/\//g, '_') || 'UNASSIGNED';
+  try {
+    const snap = await getDoc(doc(db, 'truck_members', docId));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (Array.isArray(data.members)) {
+        return data.members as Member[];
+      }
+    }
+    return [];
+  } catch (err) {
+    console.warn(`Failed to get members for truck ${docId}:`, err);
+    return [];
+  }
+}
+
 /**
  * Partition and save members to Firestore by truck number.
- * This keeps document sizes small (~30KB per truck) and optimizes free tier reads.
+ * Uses metadata index to remove stale trucks without downloading all 60MB+ docs.
  */
 export async function saveMembersToCloud(
   members: Member[],
@@ -252,21 +304,23 @@ export async function saveMembersToCloud(
   const entries = Object.entries(truckGroups);
   const activeTruckSet = new Set(entries.map(([truckNo]) => truckNo));
 
-  // Remove stale truck_members docs that no longer exist in the new dataset
+  // Remove stale truck_members docs using metadata index (avoids heavy full-collection stream)
   try {
-    const existingSnap = await getDocs(collection(db, 'truck_members'));
-    const staleRefs = existingSnap.docs.filter(d => !activeTruckSet.has(d.id)).map(d => d.ref);
-    for (let i = 0; i < staleRefs.length; i += 400) {
+    const oldMeta = await getCloudMeta();
+    const oldTruckIds = oldMeta?.trucks?.map(t => t.truckNo.replace(/\//g, '_')) || [];
+    const staleIds = oldTruckIds.filter(id => !activeTruckSet.has(id));
+    for (let i = 0; i < staleIds.length; i += 400) {
       const delBatch = writeBatch(db);
-      staleRefs.slice(i, i + 400).forEach(ref => delBatch.delete(ref));
+      staleIds.slice(i, i + 400).forEach(id => delBatch.delete(doc(db, 'truck_members', id)));
       await delBatch.commit();
     }
   } catch (cleanupErr) {
     console.warn('Could not clean stale truck_members docs:', cleanupErr);
   }
 
-  const CHUNK_SIZE = 10; // Batch 10 trucks at a time for live progress and safety
+  const CHUNK_SIZE = 5; // Keep batch payload comfortably under Firestore limits
   let completedCount = 0;
+  const nowIso = new Date().toISOString();
 
   for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
     const chunk = entries.slice(i, i + CHUNK_SIZE);
@@ -278,7 +332,7 @@ export async function saveMembersToCloud(
         truckNo,
         members: memberList,
         count: memberList.length,
-        updatedAt: new Date().toISOString()
+        updatedAt: nowIso
       });
       batch.set(ref, payload);
     }
@@ -290,12 +344,17 @@ export async function saveMembersToCloud(
     }
   }
 
-  // Also save a lightweight metadata summary
+  // Save lightweight metadata summary + truck index
+  const trucksSummary: CloudTruckSummary[] = entries
+    .map(([truckNo, memberList]) => ({ truckNo, count: memberList.length }))
+    .sort((a, b) => b.count - a.count);
+
   const metaRef = doc(db, 'system', 'meta');
   await setDoc(metaRef, sanitizeForFirestore({
     totalMembers: members.length,
     trucksCount: entries.length,
-    updatedAt: new Date().toISOString()
+    trucks: trucksSummary,
+    updatedAt: nowIso
   }));
 
   return true;
@@ -308,24 +367,53 @@ export async function clearAllCloudData(): Promise<void> {
   const db = getFirebaseDb();
   if (!db) return;
 
-  for (const colName of ['truck_members', 'routes']) {
-    const snap = await getDocs(collection(db, colName));
-    for (let i = 0; i < snap.docs.length; i += 400) {
+  const meta = await getCloudMeta();
+  if (meta?.trucks && meta.trucks.length > 0) {
+    const truckIds = meta.trucks.map(t => t.truckNo.replace(/\//g, '_'));
+    for (let i = 0; i < truckIds.length; i += 400) {
       const batch = writeBatch(db);
-      snap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+      truckIds.slice(i, i + 400).forEach(id => batch.delete(doc(db, 'truck_members', id)));
       await batch.commit();
     }
+  } else {
+    const tmSnap = await getDocs(collection(db, 'truck_members'));
+    for (let i = 0; i < tmSnap.docs.length; i += 400) {
+      const batch = writeBatch(db);
+      tmSnap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+  }
+
+  const rtSnap = await getDocs(collection(db, 'routes'));
+  for (let i = 0; i < rtSnap.docs.length; i += 400) {
+    const batch = writeBatch(db);
+    rtSnap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+    await batch.commit();
   }
 }
 
 /**
- * Fetch all members from Firestore
+ * Fetch all members from Firestore in batched single-doc reads (avoids Listen stream quota spikes)
  */
 export async function getMembersFromCloud(): Promise<Member[] | null> {
   const db = getFirebaseDb();
   if (!db) return null;
 
   try {
+    const meta = await getCloudMeta();
+    if (meta?.trucks && meta.trucks.length > 0) {
+      const allMembers: Member[] = [];
+      const BATCH_SIZE = 15;
+      for (let i = 0; i < meta.trucks.length; i += BATCH_SIZE) {
+        const chunk = meta.trucks.slice(i, i + BATCH_SIZE);
+        const docs = await Promise.all(
+          chunk.map(t => getTruckMembersFromCloud(t.truckNo))
+        );
+        docs.forEach(list => allMembers.push(...list));
+      }
+      return allMembers;
+    }
+
     const colRef = collection(db, 'truck_members');
     const snap = await getDocs(colRef);
     if (snap.empty) return null;

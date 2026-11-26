@@ -3,18 +3,36 @@ import { Member, RouteAssignment, DayOfWeek, DeliveryStop, Attachment } from '..
 import { 
   saveRouteToCloud, getRouteFromCloud, markStopCompletedInCloud, 
   saveMembersToCloud, getMembersFromCloud, subscribeToRouteCloud,
-  clearAllCloudData, isFirebaseConfigured 
+  clearAllCloudData, getCloudMeta, getTruckMembersFromCloud, CloudMeta, isFirebaseConfigured 
 } from './firebase';
 
 const MEMBERS_KEY = 'water_app_members';
 const ROUTES_KEY = 'water_app_routes';
 const ATTACHMENTS_KEY = 'water_app_attachments';
 const LAST_TRUCK_KEY = 'water_app_last_truck';
+const CLOUD_META_KEY = 'water_app_cloud_meta';
+
+export async function getLocalMembers(): Promise<Member[]> {
+  return (await get<Member[]>(MEMBERS_KEY)) || [];
+}
+
+export async function saveLocalMembers(members: Member[]): Promise<void> {
+  await set(MEMBERS_KEY, members);
+}
+
+export async function getLocalCloudMeta(): Promise<CloudMeta | null> {
+  return (await get<CloudMeta>(CLOUD_META_KEY)) || null;
+}
+
+export async function saveLocalCloudMeta(meta: CloudMeta | null): Promise<void> {
+  await set(CLOUD_META_KEY, meta);
+}
 
 export async function clearAllData(): Promise<void> {
   await set(MEMBERS_KEY, []);
   await set(ROUTES_KEY, {});
   await set(ATTACHMENTS_KEY, {});
+  await set(CLOUD_META_KEY, null);
   if (isFirebaseConfigured()) {
     await clearAllCloudData().catch(err => {
       console.warn('Cloud clearAllData failed:', err);
@@ -198,4 +216,5 @@ export async function getLastTruck(): Promise<string | null> {
   return (await get<string>(LAST_TRUCK_KEY)) || null;
 }
 
-export { subscribeToRouteCloud, isFirebaseConfigured };
+export { subscribeToRouteCloud, isFirebaseConfigured, getCloudMeta, getTruckMembersFromCloud };
+export type { CloudMeta };

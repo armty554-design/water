@@ -8,7 +8,9 @@ import { LoginView } from './components/LoginView';
 import { FirebaseConfigModal } from './components/FirebaseConfigModal';
 import { 
   getMembers, saveMembers, getRoute, saveRoute, 
-  markStopCompleted, getLastTruck, saveLastTruck 
+  markStopCompleted, getLastTruck, saveLastTruck,
+  getLocalMembers, saveLocalMembers, getLocalCloudMeta, saveLocalCloudMeta,
+  getCloudMeta, getTruckMembersFromCloud, CloudMeta
 } from './services/db';
 import { subscribeToRouteCloud, isFirebaseConfigured } from './services/firebase';
 import { getCurrentUser, clearSession } from './services/auth';
@@ -32,6 +34,8 @@ export const App: React.FC = () => {
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isFirebaseModalOpen, setIsFirebaseModalOpen] = useState<boolean>(false);
   const [isCloudConnected, setIsCloudConnected] = useState<boolean>(isFirebaseConfigured());
+  const [cloudMeta, setCloudMeta] = useState<CloudMeta | null>(null);
+  const [loadedTrucksSet, setLoadedTrucksSet] = useState<Set<string>>(new Set());
 
   // Delivery condition filter (Default: only รอบปกติ!)
   const [conditionFilter, setConditionFilter] = useState<DeliveryConditionFilter>({
@@ -48,7 +52,7 @@ export const App: React.FC = () => {
     setSelectedDay(newDay);
   };
 
-  // 1. Initial Load: Auth Session & Data
+  // 1. Initial Load: Fast Metadata + Active Truck On-Demand (scales smoothly to 100k+ records)
   useEffect(() => {
     async function initData() {
       setIsLoading(true);
@@ -57,26 +61,58 @@ export const App: React.FC = () => {
         if (session) {
           setCurrentUser(session);
           setCurrentRole(session.role);
-          if (session.role === 'driver' && session.assignedTruck) {
-            setSelectedTruck(session.assignedTruck);
-          }
         }
 
-        let loadedMembers = await getMembers();
-        if (!loadedMembers || loadedMembers.length === 0) {
-          loadedMembers = initialMembersData as Member[];
-          await saveMembers(loadedMembers);
-        }
-        setMembers(loadedMembers);
+        const [lastTruck, cachedMeta, cachedMembers, latestMeta] = await Promise.all([
+          getLastTruck(),
+          getLocalCloudMeta(),
+          getLocalMembers(),
+          isFirebaseConfigured() ? getCloudMeta() : Promise.resolve(null)
+        ]);
 
-        if (!session || session.role !== 'driver') {
-          const lastTruck = await getLastTruck();
-          if (lastTruck) {
-            setSelectedTruck(lastTruck);
-          } else if (loadedMembers.length > 0) {
-            const firstTruck = loadedMembers.find(m => m.deliveryDays.includes(selectedDay))?.truckNo || loadedMembers[0].truckNo;
-            setSelectedTruck(firstTruck);
+        const activeMeta = latestMeta || cachedMeta;
+        if (activeMeta) setCloudMeta(activeMeta);
+
+        let initialTruck = '13106';
+        if (session?.role === 'driver' && session.assignedTruck) {
+          initialTruck = session.assignedTruck;
+        } else if (lastTruck) {
+          initialTruck = lastTruck;
+        } else if (activeMeta?.trucks && activeMeta.trucks.length > 0) {
+          initialTruck = activeMeta.trucks[0].truckNo;
+        }
+        setSelectedTruck(initialTruck);
+
+        // If Cloud has a newer dataset (or local cache is empty), load active truck fast without downloading 60MB+
+        const cacheIsStale = Boolean(latestMeta && cachedMeta?.updatedAt !== latestMeta.updatedAt);
+
+        if (latestMeta && (cacheIsStale || cachedMembers.length === 0)) {
+          const truckMembers = await getTruckMembersFromCloud(initialTruck);
+          await saveLocalMembers(truckMembers);
+          await saveLocalCloudMeta(latestMeta);
+          setMembers(truckMembers);
+          setLoadedTrucksSet(new Set([initialTruck]));
+        } else if (cachedMembers.length > 0) {
+          const loadedSet = new Set(cachedMembers.map(m => m.truckNo?.trim()).filter(Boolean) as string[]);
+          if (!loadedSet.has(initialTruck) && isFirebaseConfigured()) {
+            const truckMembers = await getTruckMembersFromCloud(initialTruck);
+            const merged = [...cachedMembers, ...truckMembers];
+            loadedSet.add(initialTruck);
+            await saveLocalMembers(merged);
+            setMembers(merged);
+          } else {
+            setMembers(cachedMembers);
           }
+          setLoadedTrucksSet(loadedSet);
+        } else {
+          // Offline / unconfigured fallback
+          let localOrSeed = await getMembers();
+          if ((!localOrSeed || localOrSeed.length === 0) && (initialMembersData as Member[]).length > 0) {
+            localOrSeed = initialMembersData as Member[];
+            await saveMembers(localOrSeed);
+          }
+          setMembers(localOrSeed);
+          setLoadedTrucksSet(new Set(localOrSeed.map(m => m.truckNo?.trim()).filter(Boolean) as string[]));
         }
       } catch (err) {
         console.error('Failed to init data:', err);
@@ -87,9 +123,40 @@ export const App: React.FC = () => {
     initData();
   }, []);
 
-  // 2. Compute Available Trucks for the Selected Day (includes all trucks, sorted by today's stops)
+  // On-demand fetch whenever user switches to a truck not yet cached locally
+  useEffect(() => {
+    if (isLoading || !selectedTruck || !isCloudConnected) return;
+    const cleanTruck = selectedTruck.trim();
+    if (!cleanTruck || loadedTrucksSet.has(cleanTruck)) return;
+
+    let cancelled = false;
+    (async () => {
+      const truckMembers = await getTruckMembersFromCloud(cleanTruck);
+      if (cancelled) return;
+      setLoadedTrucksSet(prev => new Set(prev).add(cleanTruck));
+      if (truckMembers.length > 0) {
+        setMembers(prev => {
+          const existingIds = new Set(truckMembers.map(m => m.id));
+          const merged = [...prev.filter(m => m.truckNo?.trim() !== cleanTruck && !existingIds.has(m.id)), ...truckMembers];
+          saveLocalMembers(merged).catch(() => {});
+          return merged;
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTruck, isLoading, isCloudConnected, loadedTrucksSet]);
+
+  // 2. Compute Available Trucks (merges instant 266-truck cloud index + exact local counts for loaded trucks)
   const availableTrucks = useMemo(() => {
-    const allTrucksSet = new Set<string>();
+    const metaCountMap = new Map<string, number>();
+    cloudMeta?.trucks?.forEach(t => {
+      if (t.truckNo) metaCountMap.set(t.truckNo.trim(), t.count);
+    });
+
+    const allTrucksSet = new Set<string>(metaCountMap.keys());
     members.forEach(m => {
       if (m.truckNo && m.truckNo.trim()) allTrucksSet.add(m.truckNo.trim());
     });
@@ -106,7 +173,7 @@ export const App: React.FC = () => {
 
     const list = Array.from(allTrucksSet).map(truckNo => ({
       truckNo,
-      count: truckCounts[truckNo] || 0
+      count: loadedTrucksSet.has(truckNo) ? (truckCounts[truckNo] || 0) : (metaCountMap.get(truckNo) || 0)
     }));
 
     list.sort((a, b) => {
@@ -115,7 +182,7 @@ export const App: React.FC = () => {
     });
 
     return list;
-  }, [members, selectedDay, conditionFilter]);
+  }, [members, cloudMeta, loadedTrucksSet, selectedDay, conditionFilter]);
 
   useEffect(() => {
     if (currentUser?.role === 'driver' && currentUser.assignedTruck) {
@@ -249,10 +316,29 @@ export const App: React.FC = () => {
     await markStopCompleted(selectedTruck, selectedDay, memberId, isCompleted, selectedDate);
   };
 
+  const handleMembersUpdated = useCallback((updatedMembers: Member[]) => {
+    setMembers(updatedMembers);
+    const counts = new Map<string, number>();
+    updatedMembers.forEach(m => {
+      const t = m.truckNo?.trim() || 'UNASSIGNED';
+      counts.set(t, (counts.get(t) || 0) + 1);
+    });
+    const loadedSet = new Set(counts.keys());
+    setLoadedTrucksSet(loadedSet);
+    const nextMeta: CloudMeta = {
+      totalMembers: updatedMembers.length,
+      trucksCount: counts.size,
+      trucks: Array.from(counts.entries()).map(([truckNo, count]) => ({ truckNo, count })).sort((a, b) => b.count - a.count),
+      updatedAt: new Date().toISOString()
+    };
+    setCloudMeta(nextMeta);
+    saveLocalCloudMeta(nextMeta).catch(() => {});
+  }, []);
+
   const handleLoadInitialData = async () => {
     const seed = initialMembersData as Member[];
     await saveMembers(seed);
-    setMembers(seed);
+    handleMembersUpdated(seed);
   };
 
   const handleLoginSuccess = (user: AuthUser) => {
@@ -288,7 +374,7 @@ export const App: React.FC = () => {
         onLogout={handleLogout}
         currentRole={currentRole}
         onRoleChange={setCurrentRole}
-        totalMembers={members.length}
+        totalMembers={cloudMeta?.totalMembers && cloudMeta.totalMembers > members.length ? cloudMeta.totalMembers : members.length}
         activeTrucksCount={availableTrucks.length}
         completedStopsCount={completedCount}
         totalStopsCount={stops.length}
@@ -305,7 +391,7 @@ export const App: React.FC = () => {
         ) : currentRole === 'office' ? (
           <OfficeView
             members={members}
-            onMembersUpdated={setMembers}
+            onMembersUpdated={handleMembersUpdated}
             stops={stops}
             onStopsChange={setStops}
             selectedTruck={selectedTruck}
