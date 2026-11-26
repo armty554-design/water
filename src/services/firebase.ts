@@ -250,6 +250,21 @@ export async function saveMembersToCloud(
   });
 
   const entries = Object.entries(truckGroups);
+  const activeTruckSet = new Set(entries.map(([truckNo]) => truckNo));
+
+  // Remove stale truck_members docs that no longer exist in the new dataset
+  try {
+    const existingSnap = await getDocs(collection(db, 'truck_members'));
+    const staleRefs = existingSnap.docs.filter(d => !activeTruckSet.has(d.id)).map(d => d.ref);
+    for (let i = 0; i < staleRefs.length; i += 400) {
+      const delBatch = writeBatch(db);
+      staleRefs.slice(i, i + 400).forEach(ref => delBatch.delete(ref));
+      await delBatch.commit();
+    }
+  } catch (cleanupErr) {
+    console.warn('Could not clean stale truck_members docs:', cleanupErr);
+  }
+
   const CHUNK_SIZE = 10; // Batch 10 trucks at a time for live progress and safety
   let completedCount = 0;
 
@@ -284,6 +299,23 @@ export async function saveMembersToCloud(
   }));
 
   return true;
+}
+
+/**
+ * Delete all existing cloud member and route documents before uploading a fresh dataset
+ */
+export async function clearAllCloudData(): Promise<void> {
+  const db = getFirebaseDb();
+  if (!db) return;
+
+  for (const colName of ['truck_members', 'routes']) {
+    const snap = await getDocs(collection(db, colName));
+    for (let i = 0; i < snap.docs.length; i += 400) {
+      const batch = writeBatch(db);
+      snap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+  }
 }
 
 /**

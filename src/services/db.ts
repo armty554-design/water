@@ -3,13 +3,24 @@ import { Member, RouteAssignment, DayOfWeek, DeliveryStop, Attachment } from '..
 import { 
   saveRouteToCloud, getRouteFromCloud, markStopCompletedInCloud, 
   saveMembersToCloud, getMembersFromCloud, subscribeToRouteCloud,
-  isFirebaseConfigured 
+  clearAllCloudData, isFirebaseConfigured 
 } from './firebase';
 
 const MEMBERS_KEY = 'water_app_members';
 const ROUTES_KEY = 'water_app_routes';
 const ATTACHMENTS_KEY = 'water_app_attachments';
 const LAST_TRUCK_KEY = 'water_app_last_truck';
+
+export async function clearAllData(): Promise<void> {
+  await set(MEMBERS_KEY, []);
+  await set(ROUTES_KEY, {});
+  await set(ATTACHMENTS_KEY, {});
+  if (isFirebaseConfigured()) {
+    await clearAllCloudData().catch(err => {
+      console.warn('Cloud clearAllData failed:', err);
+    });
+  }
+}
 
 export async function saveMembers(members: Member[]): Promise<void> {
   // 1. Save to local IndexedDB (fast instant response)

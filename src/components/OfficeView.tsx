@@ -11,7 +11,7 @@ import { AddStopModal } from './AddStopModal';
 import { SyncReportModal } from './SyncReportModal';
 import { autoSequenceStops, AutoSequenceMode } from '../services/autoSequence';
 import { parseExcelFile } from '../services/excelParser';
-import { saveMembers } from '../services/db';
+import { saveMembers, clearAllData } from '../services/db';
 import { TruckSelector } from './TruckSelector';
 
 interface OfficeViewProps {
@@ -93,8 +93,9 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
     setDragOverIndex(null);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, replaceAll = false) => {
+    const inputEl = e.target;
+    const files = inputEl.files;
     if (!files || files.length === 0) return;
 
     setIsUploading(true);
@@ -107,11 +108,18 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
         const buffer = event.target?.result as ArrayBuffer;
         const incoming = parseExcelFile(buffer);
         if (incoming.length > 0) {
-          const report = await syncMembersWithDiff(members, incoming);
-          await saveMembers(report.mergedMembers);
-          onMembersUpdated(report.mergedMembers);
-          setSyncReport(report);
-          setUploadSuccessMsg(`อัปเดตข้อมูลสำเร็จ: สมาชิกใหม่ +${report.addedCount} ราย, เปลี่ยนแปลง ${report.updatedCount} ราย, ลบออกจากสายเดิม ${report.cleanedRoutesCount} จุด`);
+          if (replaceAll) {
+            await clearAllData();
+            await saveMembers(incoming);
+            onMembersUpdated(incoming);
+            setUploadSuccessMsg(`ล้างข้อมูลเก่าทั้งหมดและนำเข้าข้อมูลใหม่สำเร็จ: ${incoming.length.toLocaleString()} รายชื่อ`);
+          } else {
+            const report = await syncMembersWithDiff(members, incoming);
+            await saveMembers(report.mergedMembers);
+            onMembersUpdated(report.mergedMembers);
+            setSyncReport(report);
+            setUploadSuccessMsg(`อัปเดตข้อมูลสำเร็จ: สมาชิกใหม่ +${report.addedCount} ราย, เปลี่ยนแปลง ${report.updatedCount} ราย, ลบออกจากสายเดิม ${report.cleanedRoutesCount} จุด`);
+          }
           setTimeout(() => setUploadSuccessMsg(null), 6000);
         } else {
           alert('ไม่พบข้อมูลในไฟล์ Excel หรือโครงสร้างคอลัมน์ไม่ถูกต้อง');
@@ -121,6 +129,7 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
         alert('เกิดข้อผิดพลาดในการประมวลผลไฟล์ Excel');
       } finally {
         setIsUploading(false);
+        inputEl.value = '';
       }
     };
 
@@ -243,13 +252,27 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
 
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <label className="inline-flex items-center px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-medium cursor-pointer transition">
               <span>{isUploading ? 'กำลังประมวลผล...' : 'นำเข้าไฟล์ Excel สมาชิก'}</span>
               <input
                 type="file"
                 accept=".xlsx,.xls"
-                onChange={handleFileUpload}
+                onChange={(e) => handleFileUpload(e, false)}
+                disabled={isUploading}
+                className="hidden"
+              />
+            </label>
+
+            <label
+              title="ลบข้อมูลสมาชิกและสายส่งเดิมออกทั้งหมด แล้วนำเข้าข้อมูลใหม่จากไฟล์ Excel"
+              className="inline-flex items-center px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-medium cursor-pointer transition"
+            >
+              <span>{isUploading ? 'กำลังประมวลผล...' : 'ล้างข้อมูลเก่า + นำเข้าใหม่'}</span>
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={(e) => handleFileUpload(e, true)}
                 disabled={isUploading}
                 className="hidden"
               />

@@ -111,11 +111,14 @@ export function parseExcelFile(arrayBuffer: ArrayBuffer): Member[] {
   }
 
   const headerRow: any[] = rows[headerIndex] || [];
+  const hasHeaders = headerRow.some(cell => typeof cell === 'string' && cell.trim().length > 0);
   const findCol = (keywords: string[], fallback: number): number => {
     const idx = headerRow.findIndex(cell => 
       typeof cell === 'string' && keywords.some(k => cell.includes(k) || cell.toLowerCase().includes(k.toLowerCase()))
     );
-    return idx !== -1 ? idx : fallback;
+    if (idx !== -1) return idx;
+    // Prevent optional missing columns from colliding with unrelated indices when headers are present
+    return hasHeaders ? -1 : fallback;
   };
 
   // Dynamically detect column indices to support both new and old Excel formats
