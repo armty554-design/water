@@ -94,16 +94,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                   แผนกจัดส่ง
                 </button>
                 <button
-                  onClick={() => onRoleChange('rebalance')}
-                  className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                    currentRole === 'rebalance'
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  จัดเกลี่ยสาย (90%)
-                </button>
-                <button
                   onClick={() => onRoleChange('driver')}
                   className={`px-2.5 py-1 rounded text-xs font-medium transition ${
                     currentRole === 'driver'

@@ -1,6 +1,6 @@
 export type DayOfWeek = 'จันทร์' | 'อังคาร' | 'พุธ' | 'พฤหัสบดี' | 'ศุกร์' | 'เสาร์' | 'อาทิตย์';
 
-export type UserRole = 'office' | 'driver' | 'rebalance';
+export type UserRole = 'office' | 'driver';
 
 export interface DaySchedule {
   day: string;          // e.g. "จ.", "อ.", "พ."
@@ -64,73 +64,5 @@ export interface RouteAssignment {
   dateKey: string; // YYYY-MM-DD
   stops: DeliveryStop[];
   updatedAt: string;
-}
-
-export interface SpatialClusterCandidate {
-  clusterId: string;
-  label: string;
-  seedMemberId: string;
-  seedLat: number;
-  seedLng: number;
-  radiusKm: number;
-  memberCount: number;
-  monthlyBottles: number;
-  dailyAvgBottles: number;
-  members: Member[];
-}
-
-export interface RebalanceConfig {
-  workingDays: number; // default: 26 วัน
-  targetCapacityPerDay: number; // default: 160 ถัง/วัน (100% capacity => 160 * workingDays = 4,160)
-  targetPercentage: number; // default: 90% (144 ถัง/วัน => 144 * workingDays = 3,744)
-  donorTruck?: string; // single donor truck (backwards compatible)
-  donorTrucks?: string[]; // multiple selected donor trucks to cut from
-  targetRecipientTruck?: string; // specific truck to receive
-  targetRecipientTrucks?: string[]; // multiple recipient trucks to distribute to
-  selectedTrucks?: string[];
-  lockedTrucks?: string[];
-  lockedMemberIds?: string[]; // specific members prohibited from moving
-  preserveDeliveryDays?: boolean; // do not change member delivery day (default: true)
-  excludeSpecialConditions?: boolean; // prevent members with special conditions/warnings from moving
-  newTrucks: string[]; // e.g. ["13199", "13200"]
-  selectedClusterId?: string;
-  filterDay?: string; // backwards compatibility single day
-  filterDays?: string[]; // multiple selected days e.g. ['อังคาร', 'พฤหัสบดี', 'เสาร์']
-  isDissolveTruck?: boolean; // ยุบสายนี้ทั้งคัน (โอนย้ายสมาชิกทั้งหมดออก)
-  enforceMinimum90?: boolean; // ป้องกันไม่ให้ยอดสายต้นทางลดลงต่ำกว่า 90% (144 ถัง/วัน)
-}
-
-export interface TruckVolumeStats {
-  truckNo: string;
-  memberCount: number;
-  monthlyBottles: number;
-  dailyAvgBottles: number; // monthlyBottles / workingDays
-  targetDailyBottles: number; // targetCapacityPerDay * (targetPercentage / 100)
-  utilizationRate: number; // dailyAvgBottles / targetCapacityPerDay
-  status: 'optimal' | 'overload' | 'underload';
-  isNew?: boolean;
-}
-
-export interface ReassignedMember {
-  memberId: string;
-  memberName: string;
-  oldTruck: string;
-  newTruck: string;
-  monthlyBottles: number;
-  deliveryDays: string[];
-  address?: string;
-  lat: number;
-  lng: number;
-  hasGps: boolean;
-  distanceKm?: number;
-}
-
-export interface RebalanceResult {
-  statsBefore: TruckVolumeStats[];
-  statsAfter: TruckVolumeStats[];
-  reassignedMembers: ReassignedMember[];
-  workingDays: number;
-  targetDailyBottles: number;
-  updatedMembers: Member[];
 }
 
