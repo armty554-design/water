@@ -176,10 +176,9 @@ export const App: React.FC = () => {
       count: loadedTrucksSet.has(truckNo) ? (truckCounts[truckNo] || 0) : (metaCountMap.get(truckNo) || 0)
     }));
 
-    list.sort((a, b) => {
-      if (b.count !== a.count) return b.count - a.count;
-      return a.truckNo.localeCompare(b.truckNo);
-    });
+    list.sort((a, b) =>
+      a.truckNo.localeCompare(b.truckNo, undefined, { numeric: true, sensitivity: 'base' })
+    );
 
     return list;
   }, [members, cloudMeta, loadedTrucksSet, selectedDay, conditionFilter]);
