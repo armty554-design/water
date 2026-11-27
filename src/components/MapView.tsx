@@ -108,6 +108,12 @@ export const MapView: React.FC<MapViewProps> = ({
       const timeWindow = stop.daySchedule?.timeWindow || stop.member.targetTime || 'ไม่ระบุ';
       const avgQty = stop.daySchedule?.avgQuantity || 0;
       const addressDisplay = stop.member.address || stop.member.warningNotes || stop.member.receiveType || 'ตามพิกัด GPS ที่ปักหมุด';
+      const jobBadgeHtml = stop.jobType
+        ? `<span style="display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe;">${stop.jobType}</span>`
+        : '';
+      const urgentNoteHtml = stop.urgentNote
+        ? `<div style="margin-bottom: 8px; padding: 5px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; background: #fffbeb; color: #92400e; border: 1px solid #fde68a;">งานด่วน: ${stop.urgentNote}</div>`
+        : '';
 
       const popupContent = document.createElement('div');
       popupContent.className = 'text-slate-800';
@@ -119,7 +125,9 @@ export const MapView: React.FC<MapViewProps> = ({
           <div style="font-weight: 700; font-size: 13px; color: #0f172a; margin-top: 2px;">
             ${stop.member.name}
           </div>
+          ${jobBadgeHtml}
         </div>
+        ${urgentNoteHtml}
         
         <table style="width: 100%; font-size: 11px; margin-bottom: 10px; border-collapse: collapse;">
           <tr>

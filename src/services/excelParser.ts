@@ -274,3 +274,122 @@ export function mergeAvgBottlesIntoMembers(members: Member[], avgMap: Map<string
   return { updatedMembers, matchedCount };
 }
 
+export interface Mdfssv3StopInput {
+  sourceSeq: number;
+  timeOrStatus: string;
+  timeWindow: string;
+  timeStatus?: string;
+  jobType?: string;
+  memberId: string;
+  memberName: string;
+  avgQuantity?: number;
+  distanceFromPrevKm?: number;
+  urgentNote?: string;
+  customerGroup?: string;
+  truckNo: string;
+}
+
+/**
+ * Parses daily dispatch export from mdfssv3 (.csv UTF-8 or .xlsx/.xls).
+ * Columns: ลำดับที่ส่ง, เวลา, ประเภทงาน, รหัสสมาชิก, ชื่อสมาชิก, ยอดส่งเฉลี่ย/รอบ, ระยะทางจากตำแหน่งก่อนหน้า, หมายเหตุ (บันทึกงานด่วน), กลุ่มลูกค้า, เบอร์รถ
+ * Returns a Map grouped by truckNo in original row order.
+ */
+export function parseMdfssv3File(buffer: ArrayBuffer, fileName = ''): Map<string, Mdfssv3StopInput[]> {
+  const bytes = new Uint8Array(buffer);
+  const isZipXlsx = bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+  const isOleXls = bytes.length >= 2 && bytes[0] === 0xd0 && bytes[1] === 0xcf;
+  const isCsv = fileName.toLowerCase().endsWith('.csv') || (!isZipXlsx && !isOleXls);
+
+  const wb = isCsv
+    ? XLSX.read(new TextDecoder('utf-8').decode(bytes).replace(/^\uFEFF/, ''), { type: 'string', raw: true })
+    : XLSX.read(bytes, { type: 'array' });
+
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+
+  let headerIndex = rows.findIndex(
+    r => Array.isArray(r) && r.some(c => typeof c === 'string' && c.includes('รหัสสมาชิก'))
+  );
+  if (headerIndex === -1) headerIndex = 0;
+
+  const headerRow: any[] = rows[headerIndex] || [];
+  const findCol = (keywords: string[], fallback: number): number => {
+    const idx = headerRow.findIndex(
+      cell => typeof cell === 'string' && keywords.some(k => cell.includes(k))
+    );
+    return idx !== -1 ? idx : fallback;
+  };
+
+  const colSeq = findCol(['ลำดับที่ส่ง', 'ลำดับ'], 0);
+  const colTime = findCol(['เวลา'], 1);
+  const colJobType = findCol(['ประเภทงาน'], 2);
+  const colId = findCol(['รหัสสมาชิก'], 3);
+  const colName = findCol(['ชื่อสมาชิก', 'ชื่อ-นามสกุล', 'ชื่อ'], 4);
+  const colAvg = findCol(['ยอดส่งเฉลี่ย', 'ยอดส่ง'], 5);
+  const colDist = findCol(['ระยะทาง'], 6);
+  const colUrgent = findCol(['หมายเหตุ', 'งานด่วน'], 7);
+  const colGroup = findCol(['กลุ่มลูกค้า'], 8);
+  const colTruck = findCol(['เบอร์รถ', 'สายรถ'], 9);
+
+  const timeRangeRegex = /^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}$/;
+  const result = new Map<string, Mdfssv3StopInput[]>();
+
+  for (let i = headerIndex + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+
+    const memberId = row[colId] !== undefined ? String(row[colId]).trim() : '';
+    const memberName = row[colName] !== undefined ? String(row[colName]).trim() : '';
+    if (!memberId || !memberName) continue;
+
+    const rawSeq = row[colSeq] !== undefined ? parseInt(String(row[colSeq]).trim(), 10) : 0;
+    const sourceSeq = isNaN(rawSeq) ? 0 : rawSeq;
+
+    const timeOrStatus = row[colTime] !== undefined ? String(row[colTime]).trim() : '';
+    const isTimeRange = timeRangeRegex.test(timeOrStatus);
+    const timeWindow = isTimeRange ? timeOrStatus : '';
+    const timeStatus = !isTimeRange && timeOrStatus ? timeOrStatus : undefined;
+
+    const jobTypeRaw = colJobType !== -1 && row[colJobType] !== undefined ? String(row[colJobType]).trim() : '';
+    const jobType = jobTypeRaw || undefined;
+
+    const avgRaw = colAvg !== -1 && row[colAvg] !== undefined ? String(row[colAvg]).trim() : '';
+    const avgParsed = avgRaw && avgRaw !== '-' ? parseFloat(avgRaw) : NaN;
+    const avgQuantity = !isNaN(avgParsed) ? avgParsed : undefined;
+
+    const distRaw = colDist !== -1 && row[colDist] !== undefined ? String(row[colDist]).trim() : '';
+    const distParsed = distRaw && distRaw !== '-' ? parseFloat(distRaw) : NaN;
+    const distanceFromPrevKm = !isNaN(distParsed) ? distParsed : undefined;
+
+    const urgentRaw = colUrgent !== -1 && row[colUrgent] !== undefined ? String(row[colUrgent]).trim() : '';
+    const urgentNote = urgentRaw || undefined;
+
+    const groupRaw = colGroup !== -1 && row[colGroup] !== undefined ? String(row[colGroup]).trim() : '';
+    const customerGroup = groupRaw || undefined;
+
+    const truckRaw = colTruck !== -1 && row[colTruck] !== undefined ? String(row[colTruck]).trim() : '';
+    const truckNo = truckRaw || 'UNASSIGNED';
+
+    if (!result.has(truckNo)) {
+      result.set(truckNo, []);
+    }
+    result.get(truckNo)!.push({
+      sourceSeq,
+      timeOrStatus,
+      timeWindow,
+      timeStatus,
+      jobType,
+      memberId,
+      memberName,
+      avgQuantity,
+      distanceFromPrevKm,
+      urgentNote,
+      customerGroup,
+      truckNo
+    });
+  }
+
+  return result;
+}
+
+

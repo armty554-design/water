@@ -10,7 +10,7 @@ import { MemberModal } from './MemberModal';
 import { AddStopModal } from './AddStopModal';
 import { SyncReportModal } from './SyncReportModal';
 import { autoSequenceStops, AutoSequenceMode } from '../services/autoSequence';
-import { parseExcelFile } from '../services/excelParser';
+import { parseExcelFile, parseMdfssv3File, Mdfssv3StopInput } from '../services/excelParser';
 import { saveMembers, clearAllData } from '../services/db';
 import { TruckSelector } from './TruckSelector';
 
@@ -30,6 +30,13 @@ interface OfficeViewProps {
   onSaveRoute: () => Promise<void>;
   isSaving: boolean;
   onLoadInitialData: () => void;
+  onImportMdfssv3?: (truckGroups: Map<string, Mdfssv3StopInput[]>) => Promise<{
+    truckCount: number;
+    totalStops: number;
+    matchedGps: number;
+    missingGps: number;
+    primaryTruck: string;
+  }>;
   conditionFilter: DeliveryConditionFilter;
   onConditionFilterChange: (filter: DeliveryConditionFilter) => void;
 }
@@ -52,6 +59,7 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
   onSaveRoute,
   isSaving,
   onLoadInitialData,
+  onImportMdfssv3,
   conditionFilter,
   onConditionFilterChange
 }) => {
@@ -127,6 +135,41 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
       } catch (err) {
         console.error(err);
         alert('เกิดข้อผิดพลาดในการประมวลผลไฟล์ Excel');
+      } finally {
+        setIsUploading(false);
+        inputEl.value = '';
+      }
+    };
+
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleMdfssv3Upload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputEl = e.target;
+    const files = inputEl.files;
+    if (!files || files.length === 0 || !onImportMdfssv3) return;
+
+    setIsUploading(true);
+    setUploadSuccessMsg(null);
+    const file = files[0];
+    const reader = new FileReader();
+
+    reader.onload = async (event) => {
+      try {
+        const buffer = event.target?.result as ArrayBuffer;
+        const truckGroups = parseMdfssv3File(buffer, file.name);
+        if (truckGroups.size === 0) {
+          alert('ไม่พบรายการจุดส่งในไฟล์ mdfssv3 (ตรวจสอบว่ามีคอลัมน์ รหัสสมาชิก และ เบอร์รถ)');
+          return;
+        }
+        const summary = await onImportMdfssv3(truckGroups);
+        setUploadSuccessMsg(
+          `นำเข้างานรายวัน (mdfssv3) สำเร็จ: สายรถ ${summary.primaryTruck} (${summary.totalStops.toLocaleString()} จุดส่ง • จับคู่ GPS สำเร็จ ${summary.matchedGps} จุด${summary.missingGps > 0 ? `, ไม่มี GPS ${summary.missingGps} จุด` : ''})`
+        );
+        setTimeout(() => setUploadSuccessMsg(null), 8000);
+      } catch (err) {
+        console.error(err);
+        alert('เกิดข้อผิดพลาดในการประมวลผลไฟล์ mdfssv3');
       } finally {
         setIsUploading(false);
         inputEl.value = '';
@@ -253,6 +296,22 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {onImportMdfssv3 && (
+              <label
+                title="นำเข้าคิวงานประจำวันจากระบบ mdfssv3 (.csv หรือ .xlsx) เพื่อจับคู่พิกัด GPS และเรียงงานให้คนขับ"
+                className="inline-flex items-center px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-xs transition"
+              >
+                <span>{isUploading ? 'กำลังนำเข้า...' : 'นำเข้างานรายวัน (mdfssv3)'}</span>
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  onChange={handleMdfssv3Upload}
+                  disabled={isUploading}
+                  className="hidden"
+                />
+              </label>
+            )}
+
             <label className="inline-flex items-center px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-medium cursor-pointer transition">
               <span>{isUploading ? 'กำลังประมวลผล...' : 'นำเข้าไฟล์ Excel สมาชิก'}</span>
               <input
@@ -566,7 +625,7 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                       </div>
 
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 truncate">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-semibold text-slate-900 truncate">
                             {stop.member.name}
                           </span>
@@ -576,6 +635,21 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                           <span className={`text-[10px] px-1.5 py-0.2 rounded border ${condBadge}`}>
                             {cond}
                           </span>
+                          {stop.jobType && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded border bg-indigo-50 text-indigo-800 border-indigo-200 font-semibold">
+                              {stop.jobType}
+                            </span>
+                          )}
+                          {stop.timeStatus && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded border bg-amber-50 text-amber-800 border-amber-200">
+                              {stop.timeStatus}
+                            </span>
+                          )}
+                          {!stop.member.hasGps && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded border bg-rose-50 text-rose-700 border-rose-200 font-medium">
+                              ไม่มีพิกัด GPS
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 flex-wrap">
@@ -588,6 +662,12 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
                             </span>
                           )}
                         </div>
+
+                        {stop.urgentNote && (
+                          <div className="mt-1 text-[10px] px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-900 font-medium">
+                            งานด่วน: {stop.urgentNote}
+                          </div>
+                        )}
 
                         <div className="text-[10px] text-slate-500 mt-0.5 truncate">
                           {stop.member.address ? <span className="font-medium text-slate-700">ที่อยู่: {stop.member.address} • </span> : null}

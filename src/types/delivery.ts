@@ -56,6 +56,12 @@ export interface DeliveryStop {
   completedAt?: string;
   notes?: string;
   proofPhoto?: string;
+  // Daily dispatch fields imported from mdfssv3
+  jobType?: string;
+  urgentNote?: string;
+  timeStatus?: string;
+  sourceSeq?: number;
+  distanceFromPrevKm?: number;
 }
 
 export interface RouteAssignment {

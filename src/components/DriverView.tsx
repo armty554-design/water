@@ -193,6 +193,16 @@ export const DriverView: React.FC<DriverViewProps> = ({
                       <span className="text-[10px] px-1.5 py-0.2 rounded border bg-slate-50 text-slate-700 border-slate-200">
                         {currentStop.member.deliveryCondition || 'รอบปกติ'}
                       </span>
+                      {currentStop.jobType && (
+                        <span className="text-[10px] px-1.5 py-0.2 rounded border bg-indigo-50 text-indigo-800 border-indigo-200 font-semibold">
+                          {currentStop.jobType}
+                        </span>
+                      )}
+                      {currentStop.timeStatus && (
+                        <span className="text-[10px] px-1.5 py-0.2 rounded border bg-amber-50 text-amber-800 border-amber-200">
+                          {currentStop.timeStatus}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -229,6 +239,14 @@ export const DriverView: React.FC<DriverViewProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Urgent Note from mdfssv3 if any */}
+              {currentStop.urgentNote && (
+                <div className="text-xs text-amber-900 bg-amber-50 p-2.5 rounded-lg border border-amber-200 flex items-start gap-1.5 mt-2.5 font-medium">
+                  <span className="font-bold shrink-0">งานด่วน:</span>
+                  <span className="break-words leading-relaxed">{currentStop.urgentNote}</span>
+                </div>
+              )}
 
               {/* Address Row in Hero Card */}
               <div className="text-xs text-slate-800 bg-slate-50 p-2.5 rounded-lg border border-slate-200 flex items-start gap-1.5 mt-2.5">
@@ -310,7 +328,17 @@ export const DriverView: React.FC<DriverViewProps> = ({
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-semibold text-slate-900">{stop.member.name}</span>
                           <span className="text-[10px] text-slate-400">({stop.daySchedule?.avgQuantity || 0} ถัง)</span>
+                          {stop.jobType && (
+                            <span className="text-[10px] px-1 py-0.2 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 font-medium">
+                              {stop.jobType}
+                            </span>
+                          )}
                         </div>
+                        {stop.urgentNote && (
+                          <div className="text-[10px] text-amber-800 font-medium truncate">
+                            งานด่วน: {stop.urgentNote}
+                          </div>
+                        )}
                         <div className="text-[11px] text-slate-600 truncate">
                           {stop.member.address || stop.member.warningNotes || stop.member.receiveType || 'ตามพิกัด GPS'}
                         </div>
@@ -382,7 +410,23 @@ export const DriverView: React.FC<DriverViewProps> = ({
                           <span className="text-[10px] px-1.5 py-0.2 rounded border bg-slate-50 text-slate-600 border-slate-200">
                             {stop.member.deliveryCondition || 'รอบปกติ'}
                           </span>
+                          {stop.jobType && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded border bg-indigo-50 text-indigo-800 border-indigo-200 font-semibold">
+                              {stop.jobType}
+                            </span>
+                          )}
+                          {stop.timeStatus && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded border bg-amber-50 text-amber-800 border-amber-200">
+                              {stop.timeStatus}
+                            </span>
+                          )}
                         </div>
+
+                        {stop.urgentNote && (
+                          <div className="text-[11px] bg-amber-50 text-amber-900 p-2 rounded-lg border border-amber-200 font-medium">
+                            งานด่วน: {stop.urgentNote}
+                          </div>
+                        )}
 
                         {/* Address Row (แสดงที่อยู่จัดส่งชัดเจน) */}
                         <div className="text-[11px] bg-slate-50 p-2 rounded-lg border border-slate-100 flex items-start gap-1">

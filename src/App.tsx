@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Member, DeliveryStop, DayOfWeek, UserRole } from './types/delivery';
+import { Member, DeliveryStop, DayOfWeek, DaySchedule, UserRole } from './types/delivery';
 import { AuthUser } from './types/auth';
+import { Mdfssv3StopInput } from './services/excelParser';
 import { Navbar } from './components/Navbar';
 import { OfficeView } from './components/OfficeView';
 import { DriverView } from './components/DriverView';
@@ -215,7 +216,7 @@ export const App: React.FC = () => {
           ...stop,
           sequence: idx + 1,
           member: freshMember,
-          daySchedule: schedule
+          daySchedule: stop.daySchedule || schedule
         };
       });
       setStops(refreshedStops);
@@ -340,6 +341,128 @@ export const App: React.FC = () => {
     handleMembersUpdated(seed);
   };
 
+  // Import daily dispatch jobs from mdfssv3 (.csv / .xlsx), enrich with Master GPS & Addresses
+  const handleImportMdfssv3 = async (truckGroups: Map<string, Mdfssv3StopInput[]>) => {
+    const targetTruckNos = Array.from(truckGroups.keys()).map(t =>
+      t === 'UNASSIGNED' ? selectedTruck : t.trim()
+    );
+
+    // 1. Fetch any target trucks not yet cached locally from Cloud Firestore
+    let workingMembers = [...members];
+    const nextLoadedSet = new Set(loadedTrucksSet);
+    let membersChanged = false;
+
+    if (isCloudConnected) {
+      const missingTrucks = Array.from(new Set(targetTruckNos)).filter(t => t && !nextLoadedSet.has(t));
+      if (missingTrucks.length > 0) {
+        const fetchedLists = await Promise.all(missingTrucks.map(t => getTruckMembersFromCloud(t)));
+        fetchedLists.forEach((list, idx) => {
+          const tNo = missingTrucks[idx];
+          nextLoadedSet.add(tNo);
+          if (list.length > 0) {
+            const incomingIds = new Set(list.map(m => m.id));
+            workingMembers = [
+              ...workingMembers.filter(m => m.truckNo?.trim() !== tNo && !incomingIds.has(m.id)),
+              ...list
+            ];
+            membersChanged = true;
+          }
+        });
+      }
+    }
+
+    if (membersChanged) {
+      setLoadedTrucksSet(nextLoadedSet);
+      setMembers(workingMembers);
+      await saveLocalMembers(workingMembers).catch(() => {});
+    }
+
+    const memberById = new Map<string, Member>(workingMembers.map(m => [m.id.trim(), m]));
+
+    let totalStops = 0;
+    let matchedGps = 0;
+    let missingGps = 0;
+    let primaryTruck = selectedTruck;
+    let primaryStops: DeliveryStop[] = [];
+    let isFirst = true;
+
+    for (const [rawTruck, rows] of truckGroups.entries()) {
+      const truckNo = rawTruck === 'UNASSIGNED' ? selectedTruck : rawTruck.trim();
+      const builtStops: DeliveryStop[] = rows.map((row, idx) => {
+        const master = memberById.get(row.memberId.trim());
+        const memberObj: Member = master
+          ? {
+              ...master,
+              customerGroup: row.customerGroup || master.customerGroup
+            }
+          : {
+              id: row.memberId,
+              name: row.memberName,
+              deliveryDays: [selectedDay],
+              truckNo,
+              receiveType: 'งานประจำวัน (mdfssv3)',
+              deliveryCondition: row.jobType || 'รอบปกติ',
+              customerGroup: row.customerGroup || '',
+              status: row.timeStatus || 'ปกติ',
+              lat: 0,
+              lng: 0,
+              hasGps: false,
+              schedules: {}
+            };
+
+        if (memberObj.hasGps && memberObj.lat && memberObj.lng) matchedGps++;
+        else missingGps++;
+        totalStops++;
+
+        const baseSched = memberObj.schedules?.[selectedDay] || Object.values(memberObj.schedules || {})[0];
+        const mergedSched: DaySchedule | undefined =
+          baseSched || row.timeWindow || row.avgQuantity !== undefined
+            ? {
+                day: baseSched?.day || selectedDay,
+                dayFull: selectedDay,
+                avgQuantity: row.avgQuantity ?? baseSched?.avgQuantity ?? 0,
+                timeWindow: row.timeWindow || baseSched?.timeWindow || '',
+                minMaxTime: baseSched?.minMaxTime,
+                historyTimes: baseSched?.historyTimes || [],
+                avgActualTimeMinutes: baseSched?.avgActualTimeMinutes
+              }
+            : undefined;
+
+        return {
+          sequence: idx + 1,
+          member: memberObj,
+          daySchedule: mergedSched,
+          isCompleted: false,
+          jobType: row.jobType,
+          urgentNote: row.urgentNote,
+          timeStatus: row.timeStatus,
+          sourceSeq: row.sourceSeq,
+          distanceFromPrevKm: row.distanceFromPrevKm
+        };
+      });
+
+      await saveRoute(truckNo, selectedDay, builtStops, selectedDate);
+      if (isFirst) {
+        primaryTruck = truckNo;
+        primaryStops = builtStops;
+        isFirst = false;
+      }
+    }
+
+    if (primaryTruck) {
+      setSelectedTruck(primaryTruck);
+      setStops(primaryStops);
+    }
+
+    return {
+      truckCount: truckGroups.size,
+      totalStops,
+      matchedGps,
+      missingGps,
+      primaryTruck
+    };
+  };
+
   const handleLoginSuccess = (user: AuthUser) => {
     setCurrentUser(user);
     setCurrentRole(user.role);
@@ -404,6 +527,7 @@ export const App: React.FC = () => {
             onSaveRoute={handleSaveRoute}
             isSaving={isSaving}
             onLoadInitialData={handleLoadInitialData}
+            onImportMdfssv3={handleImportMdfssv3}
             conditionFilter={conditionFilter}
             onConditionFilterChange={setConditionFilter}
           />
