@@ -25,3 +25,8 @@ dist-ssr
 
 # Vercel
 .vercel
+
+# Customer data spreadsheets (keep local only, never commit to Git)
+*.xlsx
+*.xls
+*.csv
