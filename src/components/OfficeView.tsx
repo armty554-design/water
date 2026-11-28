@@ -11,7 +11,7 @@ import { AddStopModal } from './AddStopModal';
 import { SyncReportModal } from './SyncReportModal';
 import { autoSequenceStops, AutoSequenceMode } from '../services/autoSequence';
 import { parseExcelFile, parseMdfssv3File, Mdfssv3StopInput } from '../services/excelParser';
-import { saveMembers, clearAllData } from '../services/db';
+import { saveMembers, clearAllData, CloudMeta } from '../services/db';
 import { TruckSelector } from './TruckSelector';
 
 interface OfficeViewProps {
@@ -37,6 +37,8 @@ interface OfficeViewProps {
     missingGps: number;
     primaryTruck: string;
   }>;
+  cloudMeta?: CloudMeta | null;
+  onLoadTruckMembers?: (truckNo: string) => Promise<Member[]>;
   conditionFilter: DeliveryConditionFilter;
   onConditionFilterChange: (filter: DeliveryConditionFilter) => void;
 }
@@ -60,6 +62,8 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
   isSaving,
   onLoadInitialData,
   onImportMdfssv3,
+  cloudMeta,
+  onLoadTruckMembers,
   conditionFilter,
   onConditionFilterChange
 }) => {
@@ -756,6 +760,9 @@ export const OfficeView: React.FC<OfficeViewProps> = ({
       {isAddModalOpen && (
         <AddStopModal
           allMembers={members}
+          availableTrucks={availableTrucks}
+          cloudMeta={cloudMeta || null}
+          onLoadTruckMembers={onLoadTruckMembers}
           currentStops={stops}
           selectedTruck={selectedTruck}
           selectedDay={selectedDay}

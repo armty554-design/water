@@ -3,7 +3,8 @@ import { Member, RouteAssignment, DayOfWeek, DeliveryStop, Attachment } from '..
 import { 
   saveRouteToCloud, getRouteFromCloud, markStopCompletedInCloud, 
   saveMembersToCloud, getMembersFromCloud, subscribeToRouteCloud,
-  clearAllCloudData, getCloudMeta, getTruckMembersFromCloud, CloudMeta, isFirebaseConfigured 
+  clearAllCloudData, getCloudMeta, getTruckMembersFromCloud,
+  getGlobalSearchIndexFromCloud, CloudMeta, MemberSearchIndexEntry, isFirebaseConfigured 
 } from './firebase';
 
 const MEMBERS_KEY = 'water_app_members';
@@ -11,6 +12,25 @@ const ROUTES_KEY = 'water_app_routes';
 const ATTACHMENTS_KEY = 'water_app_attachments';
 const LAST_TRUCK_KEY = 'water_app_last_truck';
 const CLOUD_META_KEY = 'water_app_cloud_meta';
+const SEARCH_INDEX_KEY = 'water_app_search_index';
+const SEARCH_INDEX_UPDATED_KEY = 'water_app_search_index_updated';
+
+export async function getOrLoadGlobalSearchIndex(cloudMeta: CloudMeta | null): Promise<MemberSearchIndexEntry[] | null> {
+  if (!cloudMeta?.indexChunks || cloudMeta.indexChunks <= 0) return null;
+
+  const cachedUpdated = await get<string>(SEARCH_INDEX_UPDATED_KEY);
+  const cachedIndex = await get<MemberSearchIndexEntry[]>(SEARCH_INDEX_KEY);
+  if (cachedIndex && cachedIndex.length > 0 && cachedUpdated === (cloudMeta.indexUpdatedAt || cloudMeta.updatedAt)) {
+    return cachedIndex;
+  }
+
+  const fetched = await getGlobalSearchIndexFromCloud(cloudMeta.indexChunks);
+  if (fetched.length > 0) {
+    await set(SEARCH_INDEX_KEY, fetched);
+    await set(SEARCH_INDEX_UPDATED_KEY, cloudMeta.indexUpdatedAt || cloudMeta.updatedAt);
+  }
+  return fetched;
+}
 
 export async function getLocalMembers(): Promise<Member[]> {
   return (await get<Member[]>(MEMBERS_KEY)) || [];
@@ -217,4 +237,4 @@ export async function getLastTruck(): Promise<string | null> {
 }
 
 export { subscribeToRouteCloud, isFirebaseConfigured, getCloudMeta, getTruckMembersFromCloud };
-export type { CloudMeta };
+export type { CloudMeta, MemberSearchIndexEntry };

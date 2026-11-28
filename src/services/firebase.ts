@@ -238,8 +238,52 @@ export interface CloudMeta {
   totalMembers: number;
   trucksCount: number;
   trucks?: CloudTruckSummary[];
+  indexChunks?: number;
+  indexUpdatedAt?: string;
   sourceFile?: string;
   updatedAt: string;
+}
+
+export interface MemberSearchIndexEntry {
+  id: string;
+  name: string;
+  truckNo: string;
+  deliveryCondition: string;
+  deliveryDays: string[];
+}
+
+/**
+ * Fetch lightweight global search index (~111k entries across 17 compact docs in /system/idx_*)
+ */
+export async function getGlobalSearchIndexFromCloud(chunksCount: number): Promise<MemberSearchIndexEntry[]> {
+  const db = getFirebaseDb();
+  if (!db || !chunksCount || chunksCount <= 0) return [];
+
+  const entries: MemberSearchIndexEntry[] = [];
+  const BATCH = 6;
+  for (let i = 0; i < chunksCount; i += BATCH) {
+    const indices = Array.from({ length: Math.min(BATCH, chunksCount - i) }, (_, k) => i + k);
+    const snaps = await Promise.all(indices.map(idx => getDoc(doc(db, 'system', `idx_${idx}`))));
+    for (const snap of snaps) {
+      if (!snap.exists()) continue;
+      const raw = snap.data()?.data;
+      if (typeof raw !== 'string') continue;
+      const lines = raw.split('\n');
+      for (const line of lines) {
+        if (!line) continue;
+        const [id, name, truckNo, deliveryCondition, daysStr] = line.split('\t');
+        if (!id || !name) continue;
+        entries.push({
+          id,
+          name,
+          truckNo: truckNo || 'ไม่ระบุ',
+          deliveryCondition: deliveryCondition || 'รอบปกติ',
+          deliveryDays: daysStr ? daysStr.split(',').map(s => s.trim()).filter(Boolean) : []
+        });
+      }
+    }
+  }
+  return entries;
 }
 
 /**
@@ -344,7 +388,47 @@ export async function saveMembersToCloud(
     }
   }
 
-  // Save lightweight metadata summary + truck index
+  // Build and upload compact search index chunks under /system/idx_*
+  const encoder = new TextEncoder();
+  const MAX_CHUNK_BYTES = 750000;
+  const idxChunks: string[] = [];
+  let curLines: string[] = [];
+  let curBytes = 0;
+
+  members.forEach(m => {
+    const line = [
+      m.id.trim(),
+      (m.name || '').replace(/[\t\r\n]/g, ' '),
+      (m.truckNo || 'ไม่ระบุ').trim().replace(/[\t\r\n]/g, ' '),
+      (m.deliveryCondition || 'รอบปกติ').replace(/[\t\r\n]/g, ' '),
+      (m.deliveryDays || []).join(', ')
+    ].join('\t');
+    const b = encoder.encode(line).length + 1;
+    if (curBytes + b > MAX_CHUNK_BYTES && curLines.length > 0) {
+      idxChunks.push(curLines.join('\n'));
+      curLines = [line];
+      curBytes = b;
+    } else {
+      curLines.push(line);
+      curBytes += b;
+    }
+  });
+  if (curLines.length > 0) idxChunks.push(curLines.join('\n'));
+
+  for (let i = 0; i < idxChunks.length; i += 4) {
+    const batch = writeBatch(db);
+    idxChunks.slice(i, i + 4).forEach((data, offset) => {
+      batch.set(doc(db, 'system', `idx_${i + offset}`), {
+        data,
+        part: i + offset,
+        totalParts: idxChunks.length,
+        updatedAt: nowIso
+      });
+    });
+    await batch.commit();
+  }
+
+  // Save lightweight metadata summary + truck & search index counts
   const trucksSummary: CloudTruckSummary[] = entries
     .map(([truckNo, memberList]) => ({ truckNo, count: memberList.length }))
     .sort((a, b) => b.count - a.count);
@@ -354,6 +438,8 @@ export async function saveMembersToCloud(
     totalMembers: members.length,
     trucksCount: entries.length,
     trucks: trucksSummary,
+    indexChunks: idxChunks.length,
+    indexUpdatedAt: nowIso,
     updatedAt: nowIso
   }));
 

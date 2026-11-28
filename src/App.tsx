@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Member, DeliveryStop, DayOfWeek, DaySchedule, UserRole } from './types/delivery';
 import { AuthUser } from './types/auth';
 import { Mdfssv3StopInput } from './services/excelParser';
@@ -124,31 +124,34 @@ export const App: React.FC = () => {
     initData();
   }, []);
 
+  // Ensure a specific truck's members are loaded into memory + IndexedDB (for cross-truck AddStopModal)
+  const ensureTruckLoaded = useCallback(async (truckNo: string): Promise<Member[]> => {
+    const cleanTruck = truckNo.trim();
+    if (!cleanTruck) return [];
+    if (loadedTrucksSet.has(cleanTruck) || !isCloudConnected) {
+      return members.filter(m => m.truckNo?.trim() === cleanTruck);
+    }
+
+    const truckMembers = await getTruckMembersFromCloud(cleanTruck);
+    setLoadedTrucksSet(prev => new Set(prev).add(cleanTruck));
+    if (truckMembers.length > 0) {
+      setMembers(prev => {
+        const existingIds = new Set(truckMembers.map(m => m.id));
+        const merged = [...prev.filter(m => m.truckNo?.trim() !== cleanTruck && !existingIds.has(m.id)), ...truckMembers];
+        saveLocalMembers(merged).catch(() => {});
+        return merged;
+      });
+    }
+    return truckMembers;
+  }, [loadedTrucksSet, isCloudConnected, members]);
+
   // On-demand fetch whenever user switches to a truck not yet cached locally
   useEffect(() => {
     if (isLoading || !selectedTruck || !isCloudConnected) return;
     const cleanTruck = selectedTruck.trim();
     if (!cleanTruck || loadedTrucksSet.has(cleanTruck)) return;
-
-    let cancelled = false;
-    (async () => {
-      const truckMembers = await getTruckMembersFromCloud(cleanTruck);
-      if (cancelled) return;
-      setLoadedTrucksSet(prev => new Set(prev).add(cleanTruck));
-      if (truckMembers.length > 0) {
-        setMembers(prev => {
-          const existingIds = new Set(truckMembers.map(m => m.id));
-          const merged = [...prev.filter(m => m.truckNo?.trim() !== cleanTruck && !existingIds.has(m.id)), ...truckMembers];
-          saveLocalMembers(merged).catch(() => {});
-          return merged;
-        });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedTruck, isLoading, isCloudConnected, loadedTrucksSet]);
+    ensureTruckLoaded(cleanTruck);
+  }, [selectedTruck, isLoading, isCloudConnected, loadedTrucksSet, ensureTruckLoaded]);
 
   // 2. Compute Available Trucks (merges instant 266-truck cloud index + exact local counts for loaded trucks)
   const availableTrucks = useMemo(() => {
@@ -241,12 +244,16 @@ export const App: React.FC = () => {
     setStops(defaultStops);
   }, []);
 
+  const membersRef = useRef<Member[]>(members);
+  membersRef.current = members;
+  const activeTruckLoaded = loadedTrucksSet.has(selectedTruck.trim());
+
   useEffect(() => {
     if (!isLoading && selectedTruck) {
-      loadStopsForRoute(selectedTruck, selectedDay, members, conditionFilter, selectedDate);
+      loadStopsForRoute(selectedTruck, selectedDay, membersRef.current, conditionFilter, selectedDate);
       saveLastTruck(selectedTruck);
     }
-  }, [selectedTruck, selectedDay, members, isLoading, conditionFilter, selectedDate, loadStopsForRoute]);
+  }, [selectedTruck, selectedDay, activeTruckLoaded, isLoading, conditionFilter, selectedDate, loadStopsForRoute]);
 
   // Real-time Cloud Route Listener (Syncs changes between Office & Driver immediately)
   useEffect(() => {
@@ -528,6 +535,8 @@ export const App: React.FC = () => {
             isSaving={isSaving}
             onLoadInitialData={handleLoadInitialData}
             onImportMdfssv3={handleImportMdfssv3}
+            cloudMeta={cloudMeta}
+            onLoadTruckMembers={ensureTruckLoaded}
             conditionFilter={conditionFilter}
             onConditionFilterChange={setConditionFilter}
           />
